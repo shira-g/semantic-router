@@ -45,7 +45,7 @@ router_replay:
   #   collection_name: "replay_records"
 
 semantic_cache:
-  enabled: true
+  enabled: false
   backend_type: "memory"  # Options: "memory", "milvus", or "hybrid"
   similarity_threshold: 0.8
   max_entries: 1000  # Only applies to memory backend
@@ -67,7 +67,7 @@ semantic_cache:
   # embedding_model: "qwen3"  # Optional: explicitly set if you want to override auto-detection
 
 tools:
-  enabled: true
+  enabled: false
   top_k: 3
   similarity_threshold: 0.2
   tools_db_path: "config/tools_db.json"
@@ -89,7 +89,7 @@ tools:
     # block_tools: []
 
 prompt_guard:
-  enabled: true  # Global default - can be overridden per category with jailbreak_enabled
+  enabled: false  # Global default - can be overridden per category with jailbreak_enabled
   use_modernbert: false
   model_id: "models/mom-jailbreak-classifier"
   threshold: 0.7
@@ -141,15 +141,22 @@ hallucination_mitigation:
 # Supported formats: 127.0.0.1, 192.168.1.1, ::1, 2001:db8::1, example.com, localhost
 # Note: Use the 'port' field for port numbers, not in the address field
 vllm_endpoints:
-  - name: "ollama"
+  - name: "endpoint1"
     address: "127.0.0.1"  # Ollama endpoint for testing
-    port: 11434
+    port: 8002
+    weight: 1
+  - name: "endpoint2"
+    address: "127.0.0.1"  # Ollama endpoint for testing
+    port: 8003
     weight: 1
 
 model_config:
-  "qwen2.5:3b":
-    reasoning_family: "qwen3"  # Qwen2.5 uses similar reasoning syntax to Qwen3
-    preferred_endpoints: ["ollama"]
+  "phi3":
+    reasoning_family: ""  # This model doesn't use reasoning
+    preferred_endpoints: ["endpoint1"]
+  "gpt-oss":
+    reasoning_family: "gpt-oss" # This model uses gpt-oss reasoning syntax
+    preferred_endpoints: ["endpoint2"]
 
 # Categories define domain metadata only (no routing logic)
 categories:
@@ -209,7 +216,7 @@ decisions:
         - type: "domain"
           name: "business"
     modelRefs:
-      - model: "qwen2.5:3b"
+      - model: "gpt-oss"
         use_reasoning: false
     plugins:
       - type: "system_prompt"
@@ -229,7 +236,7 @@ decisions:
         - type: "domain"
           name: "law"
     modelRefs:
-      - model: "qwen2.5:3b"
+      - model: "phi3"
         use_reasoning: false
     plugins:
       - type: "system_prompt"
@@ -249,7 +256,7 @@ decisions:
         - type: "domain"
           name: "psychology"
     modelRefs:
-      - model: "qwen2.5:3b"
+      - model: "phi3"
         use_reasoning: false
     plugins:
       - type: "system_prompt"
@@ -273,7 +280,7 @@ decisions:
         - type: "domain"
           name: "biology"
     modelRefs:
-      - model: "qwen2.5:3b"
+      - model: "gpt-oss"
         use_reasoning: false
     plugins:
       - type: "system_prompt"
@@ -293,8 +300,8 @@ decisions:
         - type: "domain"
           name: "chemistry"
     modelRefs:
-      - model: "qwen2.5:3b"
-        use_reasoning: true
+      - model: "gpt-oss"
+        use_reasoning: false
     plugins:
       - type: "system_prompt"
         configuration:
@@ -313,7 +320,7 @@ decisions:
         - type: "domain"
           name: "history"
     modelRefs:
-      - model: "qwen2.5:3b"
+      - model: "gpt-oss"
         use_reasoning: false
     plugins:
       - type: "system_prompt"
@@ -333,7 +340,7 @@ decisions:
         - type: "domain"
           name: "health"
     modelRefs:
-      - model: "qwen2.5:3b"
+      - model: "phi3"
         use_reasoning: false
     plugins:
       - type: "system_prompt"
@@ -357,8 +364,8 @@ decisions:
         - type: "domain"
           name: "economics"
     modelRefs:
-      - model: "qwen2.5:3b"
-        use_reasoning: false
+      - model: "gpt-oss"
+        use_reasoning: true
     plugins:
       - type: "system_prompt"
         configuration:
@@ -377,8 +384,8 @@ decisions:
         - type: "domain"
           name: "math"
     modelRefs:
-      - model: "qwen2.5:3b"
-        use_reasoning: true
+      - model: "gpt-oss"
+        use_reasoning: false
     plugins:
       - type: "system_prompt"
         configuration:
@@ -397,8 +404,8 @@ decisions:
         - type: "domain"
           name: "physics"
     modelRefs:
-      - model: "qwen2.5:3b"
-        use_reasoning: true
+      - model: "gpt-oss"
+        use_reasoning: false
     plugins:
       - type: "system_prompt"
         configuration:
@@ -417,7 +424,7 @@ decisions:
         - type: "domain"
           name: "computer_science"
     modelRefs:
-      - model: "qwen2.5:3b"
+      - model: "gpt-oss"
         use_reasoning: false
     plugins:
       - type: "system_prompt"
@@ -437,8 +444,8 @@ decisions:
         - type: "domain"
           name: "philosophy"
     modelRefs:
-      - model: "qwen2.5:3b"
-        use_reasoning: false
+      - model: "gpt-oss"
+        use_reasoning: true
     plugins:
       - type: "system_prompt"
         configuration:
@@ -457,7 +464,7 @@ decisions:
         - type: "domain"
           name: "engineering"
     modelRefs:
-      - model: "qwen2.5:3b"
+      - model: "gpt-oss"
         use_reasoning: false
     plugins:
       - type: "system_prompt"
@@ -477,7 +484,7 @@ decisions:
         - type: "domain"
           name: "other"
     modelRefs:
-      - model: "qwen2.5:3b"
+      - model: "gpt-oss"
         use_reasoning: false
     plugins:
       - type: "system_prompt"
@@ -499,7 +506,7 @@ decisions:
           auto_store: false
 
 
-default_model: "qwen2.5:3b"
+default_model: "gpt-oss"
 
 # Reasoning family configurations
 reasoning_families:

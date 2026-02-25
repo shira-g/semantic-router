@@ -259,10 +259,12 @@ def run_test(args):
             [
                 "--run-vllm",
                 "--vllm-models",
-                "openai/gpt-oss-20b",
+                "gpt-oss",
                 "--vllm-exec-modes",
                 "NR",
                 "NR_REASONING",
+                "--vllm-endpoint",
+                "http://127.0.0.1:8003/v1",
             ]
         )
 

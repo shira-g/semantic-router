@@ -29,6 +29,7 @@ func (mp *ModelPaths) IsComplete() bool {
 
 // HasLoRAModels checks if LoRA models are available
 func (mp *ModelPaths) HasLoRAModels() bool {
+	fmt.Println("debug: checking LoRA models, mp =", mp)
 	return mp.LoRAIntentClassifier != "" &&
 		mp.LoRAPIIClassifier != "" &&
 		mp.LoRASecurityClassifier != "" &&
@@ -223,9 +224,10 @@ func ValidateModelPaths(paths *ModelPaths) error {
 	if paths == nil {
 		return fmt.Errorf("model paths is nil")
 	}
-
+	fmt.Println("debug: ValidateModelPaths called with paths:", paths)
 	// If LoRA models are available, validate them
 	if paths.HasLoRAModels() {
+		fmt.Println("debug: HasLoRAModels is true, validating LoRA models")
 		loraChecks := map[string]string{
 			"LoRA Intent classifier":   paths.LoRAIntentClassifier,
 			"LoRA PII classifier":      paths.LoRAPIIClassifier,
@@ -244,9 +246,10 @@ func ValidateModelPaths(paths *ModelPaths) error {
 		}
 		return nil
 	}
-
+	fmt.Println("debug: HasLoRAModels is false, validating legacy models")
 	// If no LoRA models, validate legacy models
 	if paths.HasLegacyModels() {
+		fmt.Println("debug: HasLegacyModels is true, validating legacy models")
 		legacyChecks := map[string]string{
 			"ModernBERT base":     paths.ModernBertBase,
 			"Intent classifier":   paths.IntentClassifier,
@@ -266,7 +269,7 @@ func ValidateModelPaths(paths *ModelPaths) error {
 		}
 		return nil
 	}
-
+	fmt.Println("debug: HasLegacyModels is false, no valid models found")
 	return fmt.Errorf("no valid models found (neither LoRA nor legacy)")
 }
 
@@ -366,50 +369,64 @@ func AutoInitializeUnifiedClassifier(modelsDir string) (*UnifiedClassifier, erro
 // AutoInitializeUnifiedClassifierWithRegistry auto-discovers and initializes with mom_registry
 func AutoInitializeUnifiedClassifierWithRegistry(modelsDir string, modelRegistry map[string]string) (*UnifiedClassifier, error) {
 	// Discover models using mom_registry for LoRA detection
+	fmt.Println("debug: entering AutoInitializeUnifiedClassifierWithRegistry with modelsDir =", modelsDir)
 	paths, err := AutoDiscoverModelsWithRegistry(modelsDir, modelRegistry)
 	if err != nil {
 		return nil, fmt.Errorf("model discovery failed: %w", err)
 	}
-
+	fmt.Println("debug: here1")
 	// Validate paths
 	if err := ValidateModelPaths(paths); err != nil {
 		return nil, fmt.Errorf("model validation failed: %w", err)
 	}
+	fmt.Println("debug: here2")
 
 	// Check if we should use LoRA models
 	if paths.PreferLoRA() {
+		fmt.Println("debug: LoRA models preferred, initializing with LoRA models")
 		return initializeLoRAUnifiedClassifier(paths)
 	}
-
+	fmt.Println("debug: here3")
 	// Fallback to legacy ModernBERT initialization
 	return initializeLegacyUnifiedClassifier(paths)
 }
 
 // initializeLoRAUnifiedClassifier initializes with LoRA models
 func initializeLoRAUnifiedClassifier(paths *ModelPaths) (*UnifiedClassifier, error) {
-	// Create unified classifier instance with LoRA mode
-	classifier := &UnifiedClassifier{
-		initialized: false,
-		useLoRA:     true, // Mark as LoRA mode for high confidence
+	// Use global unified classifier instance to keep initialization consistent
+	// with GetGlobalUnifiedClassifier() callers.
+	classifier := GetGlobalUnifiedClassifier()
+
+	classifier.mu.Lock()
+	if classifier.initialized {
+		classifier.mu.Unlock()
+		return nil, fmt.Errorf("unified classifier already initialized")
 	}
 
-	// Store LoRA model paths for later initialization
-	// The actual C initialization will be done in unified_classifier.go
+	classifier.useLoRA = true // Mark as LoRA mode for high confidence
 	classifier.loraModelPaths = &LoRAModelPaths{
 		IntentPath:   paths.LoRAIntentClassifier,
 		PIIPath:      paths.LoRAPIIClassifier,
 		SecurityPath: paths.LoRASecurityClassifier,
 		Architecture: paths.LoRAArchitecture,
 	}
-
-	// Mark as initialized - the actual C initialization will be lazy-loaded
 	classifier.initialized = true
+	classifier.mu.Unlock()
 
-	// Pre-initialize LoRA C bindings to avoid lazy loading during first API call
+	// Pre-initialize LoRA C bindings to avoid lazy loading during first API call.
 	if err := classifier.initializeLoRABindings(); err != nil {
+		classifier.mu.Lock()
+		classifier.initialized = false
+		classifier.useLoRA = false
+		classifier.loraModelPaths = nil
+		classifier.loraInitialized = false
+		classifier.mu.Unlock()
 		return nil, fmt.Errorf("failed to pre-initialize LoRA bindings: %w", err)
 	}
+
+	classifier.mu.Lock()
 	classifier.loraInitialized = true
+	classifier.mu.Unlock()
 
 	return classifier, nil
 }

@@ -198,7 +198,7 @@ def get_dataset_optimal_tokens(dataset_info, model_name=None):
     difficulty = dataset_info.difficulty_level.lower()
 
     # Determine model type and capabilities
-    model_multiplier = 1.0
+    model_multiplier = 1.5
     if model_name:
         model_lower = model_name.lower()
         print(f"  🔍 Model detection: '{model_name}' -> '{model_lower}'")
@@ -212,7 +212,7 @@ def get_dataset_optimal_tokens(dataset_info, model_name=None):
             print(f"  ✅ DeepSeek model detected, using multiplier: {model_multiplier}")
         elif "gpt-oss" in model_lower:
             # GPT-OSS models use baseline token limits
-            model_multiplier = 1.0
+            model_multiplier = 1.5
             print(f"  ✅ GPT-OSS model detected, using multiplier: {model_multiplier}")
         else:
             print(
@@ -598,7 +598,7 @@ def call_model(
     max_tokens: int,
     temperature: float,
     extra_body: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, bool, Optional[int], Optional[int], Optional[int]]:
+) -> Tuple[str, bool, Optional[int], Optional[int], Optional[int], Optional[int]]:
     """Call model with given parameters."""
     try:
         response = client.chat.completions.create(
@@ -609,16 +609,17 @@ def call_model(
             extra_body=extra_body if extra_body else None,
         )
         # For reasoning models, content might be in reasoning_content instead of content
+        responser = response.model
         message = response.choices[0].message
         text = message.content or getattr(message, "reasoning_content", None) or ""
         usage = getattr(response, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
         total_tokens = getattr(usage, "total_tokens", None) if usage else None
-        return text, True, prompt_tokens, completion_tokens, total_tokens
+        return text, True, prompt_tokens, completion_tokens, total_tokens, responser
     except Exception as e:
         print(f"Model call failed: {e}")
-        return "ERROR", False, None, None, None
+        return "ERROR", False, None, None, None, None
 
 
 def build_extra_body_for_model(
@@ -691,7 +692,7 @@ def process_question_single(
         extra_body = ar_extra_body
 
     start_time = time.time()
-    response_text, success, prompt_tokens, completion_tokens, total_tokens = call_model(
+    response_text, success, prompt_tokens, completion_tokens, total_tokens, responser = call_model(
         client, model, prompt, max_tokens, temperature, extra_body=extra_body
     )
     end_time = time.time()
@@ -736,6 +737,7 @@ def process_question_single(
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
         "total_tokens": total_tokens,
+        "responser": responser,
     }
 
 
@@ -757,7 +759,9 @@ def evaluate_model_router_transparent(
 
     with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
         futures = []
-        for question in questions:
+        for i, question in enumerate(questions):
+            if i < 163 or i >= 164:
+                continue  # Only run the x question for router evaluation to save time
             futures.append(
                 executor.submit(
                     process_question_single,
@@ -861,7 +865,7 @@ def evaluate_model_vllm_multimode(
     # Base modes (always included)
     # Always use explicit True/False for reasoning-capable models to ensure consistent behavior
     mode_variants: List[Tuple[str, str, Optional[bool]]] = [
-        ("VLLM_NR", "NR", False),  # Plain prompt, reasoning OFF (baseline)
+        # ("VLLM_NR", "NR", False),  # Plain prompt, reasoning OFF (baseline)
         (
             "VLLM_NR_REASONING",
             "NR",

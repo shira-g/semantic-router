@@ -169,6 +169,14 @@ func (uc *UnifiedClassifier) Initialize(
 	intentLabels, piiLabels, securityLabels []string,
 	useCPU bool,
 ) error {
+	println("debug: Initialize called with modernbertPath:", modernbertPath)
+	println("debug: intentHeadPath:", intentHeadPath)
+	println("debug: piiHeadPath:", piiHeadPath)
+	println("debug: securityHeadPath:", securityHeadPath)
+	println("debug: intentLabels:", intentLabels)
+	println("debug: piiLabels:", piiLabels)
+	println("debug: securityLabels:", securityLabels)
+	println("debug: useCPU:", useCPU)
 	uc.mu.Lock()
 	defer uc.mu.Unlock()
 
@@ -234,7 +242,7 @@ func (uc *UnifiedClassifier) Initialize(
 		C.int(len(securityLabels)),
 		C._Bool(useCPU),
 	)
-
+	println("debug: init_unified_classifier_c returned with success =", success)
 	if !success {
 		return fmt.Errorf("failed to initialize unified classifier with labels")
 	}

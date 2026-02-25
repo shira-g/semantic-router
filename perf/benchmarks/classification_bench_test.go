@@ -55,7 +55,6 @@ func initClassifier(b *testing.B) {
 func BenchmarkClassifyBatch_Size1(b *testing.B) {
 	initClassifier(b)
 	classifier := classification.GetGlobalUnifiedClassifier()
-
 	b.ResetTimer()
 	b.ReportAllocs()
 
