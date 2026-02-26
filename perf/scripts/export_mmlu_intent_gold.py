@@ -27,6 +27,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from bench.reasoning.dataset_factory import DatasetFactory  # noqa: E402
+from bench.reasoning.dataset_interface import PromptFormatter  # noqa: E402
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,6 +90,11 @@ def main() -> int:
                 json.dumps(
                     {
                         "text": q.question,
+                        "question": q.question,
+                        "options": q.options,
+                        "router_prompt": PromptFormatter.format_plain_prompt(
+                            q.question, q.options
+                        ),
                         "gold_intent": q.category,
                     },
                     ensure_ascii=False,

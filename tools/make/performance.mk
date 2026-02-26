@@ -36,6 +36,12 @@ perf-bench-classification: build-router ensure-reports-dir
 	@export LD_LIBRARY_PATH=${PWD}/candle-binding/target/release && \
 	cd perf && go test -bench=BenchmarkClassify.* -benchmem -benchtime=10s ./benchmarks/
 
+perf-bench-classification-router-prompt: ## Run router-prompt intent classification benchmark only
+perf-bench-classification-router-prompt: build-router ensure-reports-dir
+	@$(LOG_TARGET)
+	@export LD_LIBRARY_PATH=${PWD}/candle-binding/target/release && \
+	cd perf && go test -bench='BenchmarkClassifyIntent_GoldAccuracy_RouterPrompt$$' -run '^$$' -benchmem -benchtime=1x ./benchmarks/ -v
+
 perf-bench-decision: ## Run decision engine benchmarks
 perf-bench-decision: build-router ensure-reports-dir
 	@$(LOG_TARGET)

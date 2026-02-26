@@ -760,7 +760,7 @@ def evaluate_model_router_transparent(
     with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
         futures = []
         for i, question in enumerate(questions):
-            if i < 163 or i >= 164:
+            if i < 4 or i >= 5:
                 continue  # Only run the x question for router evaluation to save time
             futures.append(
                 executor.submit(

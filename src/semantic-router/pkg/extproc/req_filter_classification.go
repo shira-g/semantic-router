@@ -2,6 +2,7 @@ package extproc
 
 import (
 	"context"
+	"os"
 	"strings"
 	"time"
 
@@ -110,6 +111,16 @@ func (r *OpenAIRouter) performDecisionEvaluation(originalModel string, userConte
 		signals.MatchedFactCheckRules, signals.MatchedUserFeedbackRules, signals.MatchedPreferenceRules,
 		signals.MatchedLanguageRules, signals.MatchedModalityRules)
 
+	if os.Getenv("VSR_DEBUG_INTENT_COMPARE") == "1" {
+		logging.Infof(
+			"[IntentCompare][router] request_id=%q stage=signals text=%q domain_rules=%v decision_confidence=%.4f",
+			ctx.RequestID,
+			evaluationText,
+			signals.MatchedDomainRules,
+			0.0,
+		)
+	}
+
 	// Set signal span attributes
 	allMatchedRules := []string{}
 	allMatchedRules = append(allMatchedRules, signals.MatchedKeywordRules...)
@@ -202,6 +213,17 @@ func (r *OpenAIRouter) performDecisionEvaluation(originalModel string, userConte
 	ctx.VSRSelectedDecisionConfidence = evaluationConfidence
 	logging.Infof("Decision Evaluation Result: decision=%s, category=%s, confidence=%.3f, matched_rules=%v",
 		decisionName, categoryName, evaluationConfidence, result.MatchedRules)
+	if os.Getenv("VSR_DEBUG_INTENT_COMPARE") == "1" {
+		logging.Infof(
+			"[IntentCompare][router] request_id=%q stage=decision text=%q selected_category=%q decision=%q decision_confidence=%.4f matched_domain_rules=%v",
+			ctx.RequestID,
+			evaluationText,
+			categoryName,
+			decisionName,
+			evaluationConfidence,
+			signals.MatchedDomainRules,
+		)
+	}
 
 	// Model selection only happens for auto models
 	// When a specific model is requested, we keep it but still apply decision plugins

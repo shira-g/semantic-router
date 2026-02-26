@@ -2,6 +2,7 @@ package classification
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -1261,7 +1262,20 @@ func (c *Classifier) EvaluateAllSignalsWithContext(text string, contextText stri
 			logging.Infof("[Signal Computation] Domain signal evaluation completed in %v", elapsed)
 			if err != nil {
 				logging.Errorf("domain rule evaluation failed: %v", err)
+				if os.Getenv("VSR_DEBUG_INTENT_COMPARE") == "1" {
+					logging.Infof("[IntentCompare][router] text=%q classify_error=%v", text, err)
+				}
 			} else if result.Confidence >= c.Config.CategoryModel.Threshold {
+				if os.Getenv("VSR_DEBUG_INTENT_COMPARE") == "1" {
+					logging.Infof(
+						"[IntentCompare][router] text=%q class_index=%d predicted=%q confidence=%.4f threshold=%.4f",
+						text,
+						result.Class,
+						categoryName,
+						result.Confidence,
+						c.Config.CategoryModel.Threshold,
+					)
+				}
 				// Only add domain if confidence meets threshold
 				// Without this check, low-confidence misclassifications can still match decisions,
 				// causing incorrect routing for typo-laden text
@@ -1273,6 +1287,15 @@ func (c *Classifier) EvaluateAllSignalsWithContext(text string, contextText stri
 					results.MatchedDomainRules = append(results.MatchedDomainRules, categoryName)
 					mu.Unlock()
 				}
+			} else if os.Getenv("VSR_DEBUG_INTENT_COMPARE") == "1" {
+				logging.Infof(
+					"[IntentCompare][router] text=%q class_index=%d predicted=%q confidence=%.4f threshold=%.4f below_threshold=true",
+					text,
+					result.Class,
+					categoryName,
+					result.Confidence,
+					c.Config.CategoryModel.Threshold,
+				)
 			}
 		}()
 	} else if !isSignalTypeUsed(usedSignals, config.SignalTypeDomain) {

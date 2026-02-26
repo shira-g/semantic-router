@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -15,14 +16,23 @@ import (
 )
 
 const INTENT_GOLD_DATASET_PATH = "INTENT_GOLD_DATASET_PATH"
+const INTENT_COMPARE_DEBUG_ENV = "VSR_DEBUG_INTENT_COMPARE"
+const INTENT_CATEGORY_THRESHOLD_ENV = "INTENT_CATEGORY_CONFIDENCE_THRESHOLD"
+const INTENT_UNKNOWN_LABEL = "unknown"
 
 type intentGoldExample struct {
 	Text       string
+	Question   string
+	Options    []string
+	RouterPrompt string
 	GoldIntent string
 }
 
 type intentGoldRow struct {
 	Text       string `json:"text"`
+	Question   string `json:"question"`
+	Options    []string `json:"options"`
+	RouterPrompt string `json:"router_prompt"`
 	GoldIntent string `json:"gold_intent"`
 	Label      string `json:"label"`
 	Intent     string `json:"intent"`
@@ -45,6 +55,23 @@ func resolveIntentGoldDatasetPath() string {
 
 func normalizeIntentLabel(label string) string {
 	return strings.ToLower(strings.TrimSpace(label))
+}
+
+func resolveIntentCategoryThreshold() (float64, error) {
+	raw := strings.TrimSpace(os.Getenv(INTENT_CATEGORY_THRESHOLD_ENV))
+	if raw == "" {
+		return 0.0, nil
+	}
+
+	threshold, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return 0.0, fmt.Errorf("invalid %s=%q: %w", INTENT_CATEGORY_THRESHOLD_ENV, raw, err)
+	}
+	if threshold < 0.0 || threshold > 1.0 {
+		return 0.0, fmt.Errorf("invalid %s=%q: must be in [0.0, 1.0]", INTENT_CATEGORY_THRESHOLD_ENV, raw)
+	}
+
+	return threshold, nil
 }
 
 func loadIntentGoldExamples(path string) ([]intentGoldExample, error) {
@@ -82,6 +109,9 @@ func loadIntentGoldExamples(path string) ([]intentGoldExample, error) {
 
 		examples = append(examples, intentGoldExample{
 			Text:       row.Text,
+			Question:   row.Question,
+			Options:    row.Options,
+			RouterPrompt: row.RouterPrompt,
 			GoldIntent: gold,
 		})
 	}
@@ -93,7 +123,7 @@ func loadIntentGoldExamples(path string) ([]intentGoldExample, error) {
 	return examples, nil
 }
 
-func BenchmarkClassifyIntent_GoldAccuracy(b *testing.B) {
+func runIntentAccuracyBenchmark(b *testing.B, useRouterPrompt bool) {
 	initClassifier(b)
 	classifier := classification.GetGlobalUnifiedClassifier()
 
@@ -106,6 +136,11 @@ func BenchmarkClassifyIntent_GoldAccuracy(b *testing.B) {
 		b.Skipf("intent gold dataset is empty: %s", datasetPath)
 	}
 
+	threshold, thresholdErr := resolveIntentCategoryThreshold()
+	if thresholdErr != nil {
+		b.Fatalf("%v", thresholdErr)
+	}
+
 	normalizedGold := make([]string, len(examples))
 	for i := range examples {
 		normalizedGold[i] = normalizeIntentLabel(examples[i].GoldIntent)
@@ -114,11 +149,30 @@ func BenchmarkClassifyIntent_GoldAccuracy(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 
+	if useRouterPrompt {
+		hasRouterPrompt := false
+		for _, ex := range examples {
+			if strings.TrimSpace(ex.RouterPrompt) != "" {
+				hasRouterPrompt = true
+				break
+			}
+		}
+		if !hasRouterPrompt {
+			b.Skipf("dataset=%s has no router_prompt field; regenerate via perf/scripts/export_mmlu_intent_gold.py", datasetPath)
+		}
+	}
+
 	var accuracy float64
 	for i := 0; i < b.N; i++ {
 		correct := 0
+		unknownCount := 0
 		for idx, ex := range examples {
-			results, classifyErr := classifier.ClassifyBatch([]string{ex.Text})
+			inputText := ex.Text
+			if useRouterPrompt {
+				inputText = ex.RouterPrompt
+			}
+
+			results, classifyErr := classifier.ClassifyBatch([]string{inputText})
 			if classifyErr != nil {
 				b.Fatalf("classification failed: %v", classifyErr)
 			}
@@ -126,15 +180,51 @@ func BenchmarkClassifyIntent_GoldAccuracy(b *testing.B) {
 				continue
 			}
 
+			confidence := float64(results.IntentResults[0].Confidence)
 			predicted := normalizeIntentLabel(results.IntentResults[0].Category)
+			if confidence < threshold {
+				predicted = INTENT_UNKNOWN_LABEL
+				unknownCount++
+			}
+			if os.Getenv(INTENT_COMPARE_DEBUG_ENV) == "1" {
+				flow := "perf"
+				if useRouterPrompt {
+					flow = "perf-router-prompt"
+				}
+				fmt.Printf(
+					"[IntentCompare][%s] text=%q predicted=%q confidence=%.4f threshold=%.4f gold=%q\n",
+					flow,
+					inputText,
+					predicted,
+					confidence,
+					threshold,
+					normalizedGold[idx],
+				)
+			}
 			if predicted == normalizedGold[idx] {
 				correct++
 			}
 		}
 		accuracy = float64(correct) / float64(len(examples))
+		if i == b.N-1 {
+			b.ReportMetric(float64(unknownCount), "intent_unknown_count")
+			b.ReportMetric((float64(unknownCount)/float64(len(examples)))*100.0, "intent_unknown_pct")
+		}
 	}
 
 	b.StopTimer()
 	b.ReportMetric(accuracy*100, "intent_acc_pct")
-	b.Logf("dataset=%s samples=%d intent_accuracy=%.2f%%", datasetPath, len(examples), accuracy*100)
+	mode := "raw_text"
+	if useRouterPrompt {
+		mode = "router_prompt"
+	}
+	b.Logf("dataset=%s mode=%s samples=%d threshold=%.4f intent_accuracy=%.2f%%", datasetPath, mode, len(examples), threshold, accuracy*100)
+}
+
+func BenchmarkClassifyIntent_GoldAccuracy(b *testing.B) {
+	runIntentAccuracyBenchmark(b, false)
+}
+
+func BenchmarkClassifyIntent_GoldAccuracy_RouterPrompt(b *testing.B) {
+	runIntentAccuracyBenchmark(b, true)
 }
