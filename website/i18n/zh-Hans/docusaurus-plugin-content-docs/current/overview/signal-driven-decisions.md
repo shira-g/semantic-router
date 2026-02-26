@@ -153,30 +153,6 @@ signals:
 - **示例 1**："Hola, ¿cómo estás?" → Spanish (es) → Spanish model
 - **示例 2**："你好，世界" → Chinese (zh) → Chinese model
 
-### 延迟路由已迁移到 decision algorithm
-
-在新配置中，延迟应作为模型选择算法配置，而不是请求信号。
-
-```yaml
-decisions:
-  - name: "fast_route"
-    rules:
-      operator: "AND"
-      conditions:
-        - type: "domain"
-          name: "other"
-    modelRefs:
-      - model: "openai/gpt-oss-120b"
-      - model: "gpt-5.2"
-    algorithm:
-      type: "latency_aware"
-      latency_aware:
-        tpot_percentile: 10
-        ttft_percentile: 10
-```
-
-如果您在使用旧的 latency signal 配置，请参考[延迟路由迁移指南](../installation/latency-migration.md)。
-
 ### 8. Context Signal
 
 - **内容**：基于 token 计数的短/长请求处理路由
@@ -272,26 +248,113 @@ decisions:
 - **逻辑**：**如果**关键词 OR (或者) 嵌入匹配，路由到 code_help
 - **用例**：广泛覆盖（减少漏报）
 
-### 嵌套逻辑 - 复杂规则
+### NOT 运算符 — 一元取反
+
+`NOT` 是严格的一元运算符：它只接受**恰好一个子节点**并取反其结果。
 
 ```yaml
 decisions:
-  - name: "verified_math"
+  - name: "non_code"
+    rules:
+      operator: "NOT"
+      conditions:
+        - type: "keyword"       # 必须恰好一个子节点
+          name: "code_request"
+```
+
+- **逻辑**：如果查询**不**包含代码相关关键词则路由
+- **用例**：补集路由、排除门控
+
+### 派生运算符（由 AND / OR / NOT 组合而成）
+
+由于 `NOT` 是一元的，复合逻辑门通过嵌套构建：
+
+| 运算符 | 布尔等式 | YAML 结构 |
+| --- | --- | --- |
+| **NOR** | `¬(A ∨ B)` | `NOT → OR → [A, B]` |
+| **NAND** | `¬(A ∧ B)` | `NOT → AND → [A, B]` |
+| **XOR** | `(A ∧ ¬B) ∨ (¬A ∧ B)` | `OR → [AND(A,NOT(B)), AND(NOT(A),B)]` |
+| **XNOR** | `(A ∧ B) ∨ (¬A ∧ ¬B)` | `OR → [AND(A,B), AND(NOT(A),NOT(B))]` |
+
+**NOR** — 当所有条件均不匹配时路由：
+
+```yaml
+rules:
+  operator: "NOT"
+  conditions:
+    - operator: "OR"
+      conditions:
+        - type: "domain"
+          name: "computer_science"
+        - type: "domain"
+          name: "math"
+```
+
+**NAND** — 当条件不全部同时匹配时路由：
+
+```yaml
+rules:
+  operator: "NOT"
+  conditions:
+    - operator: "AND"
+      conditions:
+        - type: "language"
+          name: "zh"
+        - type: "keyword"
+          name: "code_request"
+```
+
+**XOR** — 当恰好一个条件匹配时路由：
+
+```yaml
+rules:
+  operator: "OR"
+  conditions:
+    - operator: "AND"
+      conditions:
+        - type: "keyword"
+          name: "code_request"
+        - operator: "NOT"
+          conditions:
+            - type: "keyword"
+              name: "math_request"
+    - operator: "AND"
+      conditions:
+        - operator: "NOT"
+          conditions:
+            - type: "keyword"
+              name: "code_request"
+        - type: "keyword"
+          name: "math_request"
+```
+
+### 任意嵌套 — 布尔表达式树
+
+`conditions` 中的每个元素可以是**叶子节点**（包含 `type` + `name` 的信号引用）或**复合节点**（包含 `operator` + `conditions` 的子树）。这使规则结构成为一棵可无限深度嵌套的递归布尔表达式树（AST）。
+
+```yaml
+# (cs ∨ math_keyword) ∧ en ∧ ¬long_context
+decisions:
+  - name: "stem_english_short"
     rules:
       operator: "AND"
       conditions:
-        - type: "domain"
-          name: "mathematics"
-        - operator: "OR"
+        - operator: "OR"                    # 复合子节点
           conditions:
+            - type: "domain"
+              name: "computer_science"
             - type: "keyword"
-              name: "proof_keywords"
-            - type: "fact_check"
-              name: "factual_queries"
+              name: "math_request"
+        - type: "language"                  # 叶子节点
+          name: "en"
+        - operator: "NOT"                   # 复合子节点（一元 NOT）
+          conditions:
+            - type: "context"
+              name: "long_context"
 ```
 
-- **逻辑**：如果 (数学领域) AND (证明关键词 OR 需要事实核查) 则路由
-- **用例**：复杂路由场景
+- **逻辑**：`(CS 领域 OR 数学关键词) AND 英语 AND NOT 长上下文`
+- **用例**：多信号、多层次路由
 
 ## 真实世界示例
 

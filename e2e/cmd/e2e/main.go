@@ -19,6 +19,7 @@ import (
 	mlmodelselection "github.com/vllm-project/semantic-router/e2e/profiles/ml-model-selection"
 	multiendpoint "github.com/vllm-project/semantic-router/e2e/profiles/multi-endpoint"
 	productionstack "github.com/vllm-project/semantic-router/e2e/profiles/production-stack"
+	raghybridsearch "github.com/vllm-project/semantic-router/e2e/profiles/rag-hybrid-search"
 	responseapi "github.com/vllm-project/semantic-router/e2e/profiles/response-api"
 	responseapiredis "github.com/vllm-project/semantic-router/e2e/profiles/response-api-redis"
 	responseapirediscluster "github.com/vllm-project/semantic-router/e2e/profiles/response-api-redis-cluster"
@@ -42,6 +43,9 @@ import (
 
 	// Multi-endpoint profile
 	_ "github.com/vllm-project/semantic-router/e2e/profiles/multi-endpoint"
+
+	// RAG hybrid search profile (multi-store, BM25 + n-gram + vector)
+	_ "github.com/vllm-project/semantic-router/e2e/profiles/rag-hybrid-search"
 )
 
 const version = "v1.0.0"
@@ -151,6 +155,8 @@ func getProfile(name string) (framework.Profile, error) {
 		return multiendpoint.NewProfile(), nil
 	case "authz-rbac":
 		return authzrbac.NewProfile(), nil
+	case "rag-hybrid-search":
+		return raghybridsearch.NewProfile(), nil
 	default:
 		return nil, fmt.Errorf("unknown profile: %s", name)
 	}

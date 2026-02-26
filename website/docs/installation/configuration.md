@@ -6,15 +6,6 @@ sidebar_position: 4
 
 This guide covers the configuration options for the Semantic Router. The system uses a single YAML configuration file that controls **signal-driven routing**, **plugin chain processing**, and **model selection**.
 
-## Migration notice
-
-Latency routing is moving from legacy signal-based config to decision algorithm config.
-
-- Deprecated: `signals.latency` / `signals.latency_rules` with `conditions.type: latency`
-- Recommended: `decision.algorithm.type: latency_aware`
-
-See the [Latency routing migration guide](latency-migration.md) before updating existing configs.
-
 ## Architecture Overview
 
 The configuration defines four main layers:
@@ -45,6 +36,22 @@ semantic_cache:
   max_entries: 1000
   ttl_seconds: 3600
   eviction_policy: "fifo"  # Options: "fifo", "lru", "lfu"
+
+# Vector Store — local document ingestion and search (RAG)
+vector_store:
+  enabled: false
+  backend_type: "memory"  # Options: "memory", "milvus", or "llama_stack"
+  file_storage_dir: "/tmp/vsr-data"
+  embedding_model: "bert"
+  embedding_dimension: 384
+  # llama_stack:
+  #   endpoint: "http://localhost:8321"
+  #   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  #   search_type: "hybrid"  # Options: "vector" (default), "hybrid"
+  #
+  # Score ranges by search_type:
+  #   "vector" → cosine similarity 0.0–1.0 (similarity_threshold ~0.7 is typical)
+  #   "hybrid" → RRF scores 0.001–0.05 (threshold is skipped automatically)
 
 # Tool auto-selection
 tools:
@@ -430,16 +437,6 @@ signals:
 - Support multilingual applications
 - Supports 100+ languages via whatlanggo library
 
-### Legacy latency signals (deprecated)
-
-Legacy latency signal config is still accepted during a backward-compatibility window:
-
-- `signals.latency` (CLI-style config) or `signals.latency_rules` (router-style config)
-- `conditions.type: latency`
-
-New configs should use `decision.algorithm.type: latency_aware` instead.
-See [Latency routing migration guide](latency-migration.md) for conversion details and limitations.
-
 ### 8. Context Signals - Token Count Routing
 
 ```yaml
@@ -569,7 +566,20 @@ In this example, the complexity signal will only match if:
 
 ## Decision Rules - Signal Fusion
 
-Combine signals using AND/OR operators:
+Decision rules form a **recursive boolean expression tree (AST)**. Each `conditions` element is either:
+
+- a **leaf node** — a signal reference with `type` + `name`
+- a **composite node** — a sub-expression with `operator` + `conditions`
+
+Three primitive operators are supported:
+
+| Operator | Semantics | Children |
+| --- | --- | --- |
+| `AND` | All children must match | 1 or more |
+| `OR` | At least one child must match | 1 or more |
+| `NOT` | Negates its single child | **exactly 1** |
+
+Derived gates (NOR, NAND, XOR, XNOR) are expressed by composing these primitives — see examples below.
 
 ```yaml
 decisions:
@@ -590,6 +600,51 @@ decisions:
         weight: 1.0
 ```
 
+**NOT — exclusion routing** (`NOT` is strictly unary):
+
+```yaml
+decisions:
+  - name: non_stem_fallback
+    description: "Route when NOT a STEM domain"
+    priority: 50
+    rules:
+      operator: "NOT"
+      conditions:
+        - operator: "OR"          # NOR = NOT(OR(...))
+          conditions:
+            - type: "domain"
+              name: "computer_science"
+            - type: "domain"
+              name: "math"
+    modelRefs:
+      - model: general-model
+```
+
+**Arbitrary nesting** — `(cs ∨ math_kw) ∧ en ∧ ¬long_context`:
+
+```yaml
+decisions:
+  - name: stem_english_short
+    priority: 500
+    rules:
+      operator: "AND"
+      conditions:
+        - operator: "OR"
+          conditions:
+            - type: "domain"
+              name: "computer_science"
+            - type: "keyword"
+              name: "math_request"
+        - type: "language"
+          name: "en"
+        - operator: "NOT"
+          conditions:
+            - type: "context"
+              name: "long_context"
+    modelRefs:
+      - model: en-cs-specialist
+```
+
 **Example with Complexity Signal:**
 
 ```yaml
@@ -607,6 +662,41 @@ decisions:
     modelRefs:
       - model: deepseek-coder-v2
         weight: 1.0
+```
+
+### Model Selection Algorithms
+
+When a decision has multiple `modelRefs`, configure model selection with `decision.algorithm.type`.
+
+Supported selection algorithms:
+
+- `static`
+- `elo`
+- `router_dc`
+- `automix`
+- `hybrid`
+- `rl_driven`
+- `gmtrouter`
+- `latency_aware`
+
+Use `latency_aware` for percentile-based latency routing:
+
+```yaml
+decisions:
+  - name: "fast_route"
+    rules:
+      operator: "AND"
+      conditions:
+        - type: "domain"
+          name: "other"
+    modelRefs:
+      - model: "openai/gpt-oss-120b"
+      - model: "gpt-5.2"
+    algorithm:
+      type: "latency_aware"
+      latency_aware:
+        tpot_percentile: 10
+        ttft_percentile: 10
 ```
 
 **Strategies:**
@@ -1825,7 +1915,6 @@ This workflow ensures your configuration is:
 
 - **[Installation Guide](installation.md)** - Setup instructions
 - **[Quick Start Guide](installation.md)** - Basic usage examples
-- **[Latency Routing Migration Guide](latency-migration.md)** - Move deprecated latency-signal config to `algorithm.type: latency_aware`
 - **[API Documentation](../api/router.md)** - Complete API reference
 
 The configuration system is designed to be simple yet powerful. Start with the basic configuration and gradually enable advanced features as needed.
