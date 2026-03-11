@@ -40,6 +40,8 @@ typedef struct {
 typedef struct {
     char* category;
     float confidence;
+	float* probabilities;
+	int num_probabilities;
 } LoRAIntentResult;
 
 typedef struct {
@@ -371,9 +373,16 @@ func (uc *UnifiedClassifier) convertLoRAResultsToGo(result *C.LoRABatchResult) *
 		intentSlice := (*[1000]C.LoRAIntentResult)(unsafe.Pointer(result.intent_results))[:batchSize:batchSize]
 		for i, cIntent := range intentSlice {
 			results.IntentResults[i] = IntentResult{
-				Category:      C.GoString(cIntent.category),
-				Confidence:    float32(cIntent.confidence),
-				Probabilities: []float32{float32(cIntent.confidence)}, // Simplified
+				Category:   C.GoString(cIntent.category),
+				Confidence: float32(cIntent.confidence),
+			}
+
+			if cIntent.probabilities != nil && cIntent.num_probabilities > 0 {
+				probSlice := (*[1 << 30]C.float)(unsafe.Pointer(cIntent.probabilities))[:cIntent.num_probabilities:cIntent.num_probabilities]
+				results.IntentResults[i].Probabilities = make([]float32, cIntent.num_probabilities)
+				for j, prob := range probSlice {
+					results.IntentResults[i].Probabilities[j] = float32(prob)
+				}
 			}
 		}
 	}

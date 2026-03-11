@@ -35,6 +35,7 @@ pub struct IntentLoRAClassifier {
 pub struct IntentResult {
     pub intent: String,
     pub confidence: f32,
+    pub probabilities: Vec<f32>,
     pub processing_time_ms: u64,
 }
 
@@ -111,13 +112,13 @@ impl IntentLoRAClassifier {
         matches!(&self.backend, ClassifierBackend::ModernBert(c) if c.is_multilingual())
     }
 
-    /// Classify using the appropriate backend
-    fn classify_with_backend(&self, text: &str) -> Result<(usize, f32)> {
+    /// Classify using the appropriate backend and return full probability distribution.
+    fn classify_with_backend_with_probabilities(&self, text: &str) -> Result<(usize, f32, Vec<f32>)> {
         match &self.backend {
-            ClassifierBackend::Bert(c) => c
-                .classify_text(text)
-                .map_err(|e| candle_core::Error::Msg(format!("BERT classification failed: {}", e))),
-            ClassifierBackend::ModernBert(c) => c.classify_text(text),
+            ClassifierBackend::Bert(c) => c.classify_text_with_probabilities(text).map_err(|e| {
+                candle_core::Error::Msg(format!("BERT classification failed: {}", e))
+            }),
+            ClassifierBackend::ModernBert(c) => c.classify_text_with_probabilities(text),
         }
     }
 
@@ -136,7 +137,8 @@ impl IntentLoRAClassifier {
         let start_time = Instant::now();
 
         // Use appropriate backend (BERT or ModernBERT/mmBERT) for classification
-        let (predicted_class, confidence) = self.classify_with_backend(text).map_err(|e| {
+        let (predicted_class, confidence, probabilities) =
+            self.classify_with_backend_with_probabilities(text).map_err(|e| {
             let unified_err = model_error!(
                 ModelErrorType::LoRA,
                 "intent classification",
@@ -168,6 +170,7 @@ impl IntentLoRAClassifier {
         Ok(IntentResult {
             intent,
             confidence,
+            probabilities,
             processing_time_ms: processing_time,
         })
     }
@@ -175,7 +178,8 @@ impl IntentLoRAClassifier {
     /// Classify intent and return (class_index, confidence, intent_label) for FFI
     pub fn classify_with_index(&self, text: &str) -> Result<(usize, f32, String)> {
         // Use appropriate backend (BERT or ModernBERT/mmBERT) for classification
-        let (predicted_class, confidence) = self.classify_with_backend(text).map_err(|e| {
+        let (predicted_class, confidence, _probabilities) =
+            self.classify_with_backend_with_probabilities(text).map_err(|e| {
             let unified_err = model_error!(
                 ModelErrorType::LoRA,
                 "intent classification",
@@ -226,9 +230,9 @@ impl IntentLoRAClassifier {
         let start_time = Instant::now();
 
         // For batch, use parallel classify (TraditionalModernBertClassifier doesn't expose batch)
-        let batch_results: Vec<(usize, f32)> = texts
+        let batch_results: Vec<(usize, f32, Vec<f32>)> = texts
             .iter()
-            .map(|text| self.classify_with_backend(text))
+            .map(|text| self.classify_with_backend_with_probabilities(text))
             .collect::<Result<Vec<_>>>()
             .map_err(|e: candle_core::Error| {
                 let unified_err = processing_errors::batch_processing(texts.len(), &e.to_string());
@@ -238,7 +242,7 @@ impl IntentLoRAClassifier {
         let processing_time = start_time.elapsed().as_millis() as u64;
 
         let mut results = Vec::new();
-        for (i, (predicted_class, confidence)) in batch_results.iter().enumerate() {
+        for (i, (predicted_class, confidence, probabilities)) in batch_results.iter().enumerate() {
             let intent = if *predicted_class < self.intent_labels.len() {
                 self.intent_labels[*predicted_class].clone()
             } else {
@@ -255,6 +259,7 @@ impl IntentLoRAClassifier {
             results.push(IntentResult {
                 intent,
                 confidence: *confidence,
+                probabilities: probabilities.clone(),
                 processing_time_ms: processing_time,
             });
         }

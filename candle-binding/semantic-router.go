@@ -387,6 +387,8 @@ extern void free_nli_result(NLIResult result);
 typedef struct {
     char* category;
     float confidence;
+	float* probabilities;
+	int num_probabilities;
 } LoRAIntentResult;
 
 typedef struct {
@@ -508,6 +510,7 @@ type TokenClassificationResult struct {
 type LoRAIntentResult struct {
 	Category   string
 	Confidence float32
+	Probabilities []float32
 }
 
 type LoRAPIIResult struct {
@@ -3220,10 +3223,20 @@ func ClassifyBatchWithLoRA(texts []string) (LoRABatchResult, error) {
 	if cResult.intent_results != nil {
 		intentSlice := (*[1000]C.LoRAIntentResult)(unsafe.Pointer(cResult.intent_results))[:cResult.batch_size:cResult.batch_size]
 		for _, cIntent := range intentSlice {
-			result.IntentResults = append(result.IntentResults, LoRAIntentResult{
+			intentResult := LoRAIntentResult{
 				Category:   C.GoString(cIntent.category),
 				Confidence: float32(cIntent.confidence),
-			})
+			}
+
+			if cIntent.probabilities != nil && cIntent.num_probabilities > 0 {
+				probSlice := (*[1000]C.float)(unsafe.Pointer(cIntent.probabilities))[:cIntent.num_probabilities:cIntent.num_probabilities]
+				intentResult.Probabilities = make([]float32, cIntent.num_probabilities)
+				for i, p := range probSlice {
+					intentResult.Probabilities[i] = float32(p)
+				}
+			}
+
+			result.IntentResults = append(result.IntentResults, intentResult)
 		}
 	}
 

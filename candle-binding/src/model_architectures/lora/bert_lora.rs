@@ -553,6 +553,13 @@ impl HighPerformanceBertClassifier {
 
     /// Single text classification (following old architecture pattern exactly)
     pub fn classify_text(&self, text: &str) -> Result<(usize, f32)> {
+        let (predicted_class, confidence, _probabilities) =
+            self.classify_text_with_probabilities(text)?;
+        Ok((predicted_class, confidence))
+    }
+
+    /// Single text classification with full class probabilities.
+    pub fn classify_text_with_probabilities(&self, text: &str) -> Result<(usize, f32, Vec<f32>)> {
         // Tokenize following old architecture pattern
         let encoding = self.tokenizer.encode(text, true).map_err(E::msg)?;
         let token_ids = encoding.get_ids();
@@ -592,7 +599,7 @@ impl HighPerformanceBertClassifier {
             .max_by(|(_, a), (_, b)| a.partial_cmp(b).unwrap())
             .unwrap();
 
-        Ok((predicted_class, confidence))
+        Ok((predicted_class, confidence, probabilities_vec))
     }
 
     /// Batch classification (following old architecture pattern exactly)

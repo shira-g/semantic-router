@@ -208,6 +208,15 @@ pub extern "C" fn free_lora_batch_result(result: LoRABatchResult) {
                     let _ = CString::from_raw(intent.category);
                 }
             }
+            if !intent.probabilities.is_null() && intent.num_probabilities > 0 {
+                unsafe {
+                    let _ = Vec::from_raw_parts(
+                        intent.probabilities,
+                        intent.num_probabilities as usize,
+                        intent.num_probabilities as usize,
+                    );
+                }
+            }
         }
         unsafe {
             let _ = Vec::from_raw_parts(
@@ -538,12 +547,17 @@ pub extern "C" fn free_enhanced_hallucination_detection_result(
 pub unsafe fn convert_intent_to_lora_intent(
     intent: &crate::classifiers::lora::intent_lora::IntentResult,
 ) -> crate::ffi::types::LoRAIntentResult {
-    // Create probabilities array
-    let _probabilities = vec![intent.confidence, 1.0 - intent.confidence];
+    let probabilities = if intent.probabilities.is_empty() {
+        std::ptr::null_mut()
+    } else {
+        allocate_c_float_array(&intent.probabilities)
+    };
 
     crate::ffi::types::LoRAIntentResult {
         category: allocate_c_string(&intent.intent),
         confidence: intent.confidence,
+        probabilities,
+        num_probabilities: intent.probabilities.len() as i32,
     }
 }
 

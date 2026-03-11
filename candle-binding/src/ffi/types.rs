@@ -253,6 +253,8 @@ pub struct LoRABatchResult {
 pub struct LoRAIntentResult {
     pub category: *mut c_char,
     pub confidence: f32,
+    pub probabilities: *mut f32,
+    pub num_probabilities: i32,
 }
 
 /// LoRA PII detection result (matches Go LoRAPIIResult)

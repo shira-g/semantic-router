@@ -58,6 +58,7 @@ type TokenClassificationResult struct {
 type LoRAIntentResult struct {
 	Category   string
 	Confidence float32
+	Probabilities []float32
 }
 
 type LoRAPIIResult struct {

@@ -180,6 +180,24 @@ func runIntentAccuracyBenchmark(b *testing.B, useRouterPrompt bool) {
 				continue
 			}
 
+			for resultIdx, intentResult := range results.IntentResults {
+				if len(intentResult.Probabilities) > 0 {
+					fmt.Printf(
+						"[IntentResults][%d] category=%q confidence=%.6f probabilities=%v\n",
+						resultIdx,
+						intentResult.Category,
+						intentResult.Confidence,
+						intentResult.Probabilities,
+					)
+				} else {
+					fmt.Printf(
+						"[IntentResults][%d] category=%q confidence=%.6f probabilities=<unavailable>\n",
+						resultIdx,
+						intentResult.Category,
+						intentResult.Confidence,
+					)
+				}
+			}
 			confidence := float64(results.IntentResults[0].Confidence)
 			predicted := normalizeIntentLabel(results.IntentResults[0].Category)
 			if confidence < threshold {
