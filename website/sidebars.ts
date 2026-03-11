@@ -32,7 +32,6 @@ const sidebars: SidebarsConfig = {
       items: [
         'installation/installation',
         'installation/configuration',
-        'installation/latency-migration',
         {
           type: 'category',
           label: 'Install with Gateways',
@@ -128,6 +127,7 @@ const sidebars: SidebarsConfig = {
         'proposals/prompt-classification-routing',
         'proposals/nvidia-dynamo-integration',
         'proposals/production-stack-integration',
+        'proposals/multi-protocol-adaptor',
         'proposals/agentic-rag',
         'proposals/agentic-memory',
       ],

@@ -16,6 +16,7 @@ import (
 	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/memory"
 	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/observability/logging"
 	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/observability/metrics"
+	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/ratelimit"
 )
 
 // handleResponseBody processes the response body
@@ -72,7 +73,7 @@ func (r *OpenAIRouter) handleResponseBody(v *ext_proc.ProcessingRequest_Response
 				metrics.RecordModelTTFT(ctx.RequestModel, ttft)
 				ctx.TTFTSeconds = ttft
 				ctx.TTFTRecorded = true
-				// Update TTFT cache for latency signal evaluation
+				// Update TTFT cache for latency_aware percentile-based model selection
 				latency.UpdateTTFT(ctx.RequestModel, ttft)
 				logging.Debugf("Recorded TTFT on first streamed body chunk: model=%q, TTFT=%.4fs", ctx.RequestModel, ttft)
 			}
@@ -134,6 +135,15 @@ func (r *OpenAIRouter) handleResponseBody(v *ext_proc.ProcessingRequest_Response
 	}
 	promptTokens := int(parsed.Usage.PromptTokens)
 	completionTokens := int(parsed.Usage.CompletionTokens)
+
+	// Report token usage to rate limiter for TPM budget tracking
+	if r.RateLimiter != nil && ctx.RateLimitCtx != nil {
+		r.RateLimiter.Report(*ctx.RateLimitCtx, ratelimit.TokenUsage{
+			InputTokens:  promptTokens,
+			OutputTokens: completionTokens,
+			TotalTokens:  promptTokens + completionTokens,
+		})
+	}
 
 	// Record tokens used with the model that was used
 	if ctx.RequestModel != "" {
@@ -468,6 +478,15 @@ func (r *OpenAIRouter) cacheStreamingResponse(ctx *RequestContext) error {
 		if totalTokens, ok := usageMap["total_tokens"].(float64); ok {
 			usage.TotalTokens = int64(totalTokens)
 		}
+	}
+
+	// Report streaming token usage to rate limiter
+	if r.RateLimiter != nil && ctx.RateLimitCtx != nil && (usage.PromptTokens > 0 || usage.CompletionTokens > 0) {
+		r.RateLimiter.Report(*ctx.RateLimitCtx, ratelimit.TokenUsage{
+			InputTokens:  int(usage.PromptTokens),
+			OutputTokens: int(usage.CompletionTokens),
+			TotalTokens:  int(usage.TotalTokens),
+		})
 	}
 
 	// Record token metrics for streaming responses

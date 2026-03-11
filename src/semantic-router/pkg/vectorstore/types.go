@@ -35,7 +35,7 @@ type VectorStore struct {
 	FileCounts   FileCounts             `json:"file_counts"`
 	ExpiresAfter *ExpirationPolicy      `json:"expires_after,omitempty"`
 	Metadata     map[string]interface{} `json:"metadata,omitempty"`
-	BackendType  string                 `json:"backend_type"` // "milvus", "memory"
+	BackendType  string                 `json:"backend_type"` // "memory", "milvus", "llama_stack"
 }
 
 // FileCounts tracks the processing status of files in a vector store.
@@ -88,6 +88,11 @@ type SearchResult struct {
 	Content    string  `json:"content"`
 	Score      float64 `json:"score"`
 	ChunkIndex int     `json:"chunk_index"`
+
+	// Component scores populated when hybrid search is used.
+	VectorScore *float64 `json:"vector_score,omitempty"`
+	BM25Score   *float64 `json:"bm25_score,omitempty"`
+	NgramScore  *float64 `json:"ngram_score,omitempty"`
 }
 
 // EmbeddedChunk is a chunk with its embedding, ready for storage.

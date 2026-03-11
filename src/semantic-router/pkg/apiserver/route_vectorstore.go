@@ -22,6 +22,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/vllm-project/semantic-router/src/semantic-router/pkg/vectorstore"
 )
@@ -74,10 +75,11 @@ func GetVectorStoreManager() *vectorstore.Manager {
 
 // SearchRequest represents a vector store search request.
 type SearchRequest struct {
-	Query          string                 `json:"query"`
-	MaxNumResults  int                    `json:"max_num_results,omitempty"`
-	Filters        map[string]interface{} `json:"filters,omitempty"`
-	RankingOptions *RankingOptions        `json:"ranking_options,omitempty"`
+	Query          string                          `json:"query"`
+	MaxNumResults  int                             `json:"max_num_results,omitempty"`
+	Filters        map[string]interface{}          `json:"filters,omitempty"`
+	RankingOptions *RankingOptions                 `json:"ranking_options,omitempty"`
+	Hybrid         *vectorstore.HybridSearchConfig `json:"hybrid,omitempty"`
 }
 
 // RankingOptions controls search result ranking.
@@ -229,6 +231,11 @@ func (s *ClassificationAPIServer) handleSearchVectorStore(w http.ResponseWriter,
 		return
 	}
 
+	// Backend search can be slow (e.g., Llama Stack embeds queries on CPU),
+	// so extend the server's write deadline beyond the default 30s.
+	rc := http.NewResponseController(w)
+	_ = rc.SetWriteDeadline(time.Now().Add(180 * time.Second))
+
 	// Extract vector store ID from /v1/vector_stores/{id}/search
 	path := strings.TrimPrefix(r.URL.Path, "/v1/vector_stores/")
 	id := strings.TrimSuffix(path, "/search")
@@ -269,7 +276,26 @@ func (s *ClassificationAPIServer) handleSearchVectorStore(w http.ResponseWriter,
 		return
 	}
 
-	results, err := vectorStoreManager.Backend().Search(r.Context(), id, queryEmbedding, topK, threshold, req.Filters)
+	// Llama Stack searches by text, not embedding. Pass the query text via
+	// the filter map so it can use it. Other backends safely ignore this key.
+	if req.Filters == nil {
+		req.Filters = make(map[string]interface{})
+	}
+	req.Filters["_query_text"] = req.Query
+
+	var results []vectorstore.SearchResult
+	if req.Hybrid != nil {
+		backend := vectorStoreManager.Backend()
+		if hs, ok := backend.(vectorstore.HybridSearcher); ok {
+			// Native hybrid search (e.g. in-memory backend with full-collection BM25/n-gram indexes).
+			results, err = hs.HybridSearch(r.Context(), id, req.Query, queryEmbedding, topK, threshold, req.Filters, req.Hybrid)
+		} else {
+			// Generic fallback: fetch expanded vector candidates, then re-rank with BM25 + n-gram.
+			results, err = vectorstore.GenericHybridRerank(r.Context(), backend, id, req.Query, queryEmbedding, topK, threshold, req.Filters, req.Hybrid)
+		}
+	} else {
+		results, err = vectorStoreManager.Backend().Search(r.Context(), id, queryEmbedding, topK, threshold, req.Filters)
+	}
 	if err != nil {
 		s.writeErrorResponse(w, http.StatusInternalServerError, "SEARCH_ERROR", "search failed")
 		return
