@@ -5,6 +5,7 @@ go 1.24.1
 require (
 	github.com/vllm-project/semantic-router/candle-binding v0.0.0-00010101000000-000000000000
 	github.com/vllm-project/semantic-router/src/semantic-router v0.0.0
+	github.com/vllm-project/semantic-router/nlp-binding v0.0.0-00010101000000-000000000000
 	gopkg.in/yaml.v3 v3.0.1
 )
 
@@ -62,5 +63,7 @@ require (
 replace github.com/vllm-project/semantic-router/src/semantic-router => ../src/semantic-router
 
 replace github.com/vllm-project/semantic-router/candle-binding => ../candle-binding
+
+replace github.com/vllm-project/semantic-router/nlp-binding => ../nlp-binding
 
 exclude google.golang.org/genproto v0.0.0-20220503193339-ba3ae3f07e29
