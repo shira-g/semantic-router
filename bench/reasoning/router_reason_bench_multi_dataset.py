@@ -1059,6 +1059,68 @@ def process_question_single(
 
     predicted_answer = extract_answer(response_text, question) if success else None
 
+    def _lookup_header_case_insensitive(headers_obj: Any, key: str) -> Optional[str]:
+        if not isinstance(headers_obj, dict):
+            return None
+        key_lower = key.lower()
+        for k, v in headers_obj.items():
+            if str(k).lower() == key_lower:
+                return str(v)
+        return None
+
+    def _build_final_mutated_request_debug() -> Tuple[Optional[str], Optional[str]]:
+        if not request_payload:
+            return None, None
+
+        # If router explicitly returns mutated request payload, prefer it.
+        headers_obj = None
+        if isinstance(http_response_details, dict):
+            headers_obj = http_response_details.get("headers")
+
+        explicit_mutated = None
+        for key in (
+            "x-vsr-mutated-request",
+            "x-vsr-final-mutated-request",
+            "x-vsr-upstream-request",
+        ):
+            explicit_mutated = _lookup_header_case_insensitive(headers_obj, key)
+            if explicit_mutated:
+                return explicit_mutated, "router_header"
+
+        # Otherwise reconstruct best-effort request from known router metadata.
+        estimated = dict(request_payload)
+        estimated_messages = list(estimated.get("messages", []))
+
+        selected_model = _lookup_header_case_insensitive(
+            headers_obj, "x-vsr-selected-model"
+        )
+        injected_system_prompt = _lookup_header_case_insensitive(
+            headers_obj, "x-vsr-injected-system-prompt"
+        )
+
+        if selected_model:
+            estimated["model"] = selected_model
+        elif responser:
+            estimated["model"] = responser
+
+        if injected_system_prompt and injected_system_prompt.lower() == "true":
+            estimated_messages = [
+                {
+                    "role": "system",
+                    "content": "<injected by router; content unavailable from client-side logs>",
+                }
+            ] + estimated_messages
+            estimated["router_system_prompt_injected"] = True
+        else:
+            estimated["router_system_prompt_injected"] = False
+
+        estimated["messages"] = estimated_messages
+        return json.dumps(estimated, ensure_ascii=False), "estimated_from_headers"
+
+    final_mutated_request, final_mutated_request_source = (
+        _build_final_mutated_request_debug()
+    )
+
     if debug_print_request_response:
         print("\n" + "=" * 30 + " DEBUG REQUEST/RESPONSE " + "=" * 30)
         print(
@@ -1082,6 +1144,13 @@ def process_question_single(
             print("(No HTTP response details captured)")
         print("--- RESPONSE TEXT ---")
         print(response_text)
+        print("--- FINAL MUTATED REQUEST (BEST-EFFORT) ---")
+        if final_mutated_request:
+            print(final_mutated_request)
+            if final_mutated_request_source:
+                print(f"(source={final_mutated_request_source})")
+        else:
+            print("(Unavailable)")
         print("=" * 84 + "\n")
 
     # Compare predicted answer with correct answer (handle multiple formats)
@@ -1134,6 +1203,8 @@ def process_question_single(
         result["http_response_details"] = json.dumps(
             http_response_details, ensure_ascii=False, default=str
         ) if http_response_details else None
+        result["final_mutated_request"] = final_mutated_request
+        result["final_mutated_request_source"] = final_mutated_request_source
 
     return result
 
@@ -1591,6 +1662,8 @@ def save_results(
             "requested_model",
             "request_prompt",
             "request_payload",
+            "final_mutated_request",
+            "final_mutated_request_source",
             "http_response_details",
             "model_response",
             "category",
@@ -1607,7 +1680,14 @@ def save_results(
 
     if not debug_log_request_response:
         prediction_log_df = prediction_log_df.drop(
-            columns=["request_prompt", "request_payload", "http_response_details", "model_response"],
+            columns=[
+                "request_prompt",
+                "request_payload",
+                "final_mutated_request",
+                "final_mutated_request_source",
+                "http_response_details",
+                "model_response",
+            ],
             errors="ignore",
         )
     existing_cols = [c for c in preferred_cols if c in prediction_log_df.columns]
