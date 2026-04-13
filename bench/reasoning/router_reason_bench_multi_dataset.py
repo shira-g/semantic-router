@@ -166,10 +166,34 @@ def parse_args():
         help="Temperature for text generation",
     )
     parser.add_argument(
+        "--top-p",
+        type=float,
+        default=1.0,
+        help="Top-p nucleus sampling parameter (default: 1.0)",
+    )
+    parser.add_argument(
+        "--top-k",
+        type=int,
+        default=-1,
+        help="Top-k sampling parameter (default: -1, disabled)",
+    )
+    parser.add_argument(
+        "--presence-penalty",
+        type=float,
+        default=0.0,
+        help="Presence penalty (default: 0.0)",
+    )
+    parser.add_argument(
+        "--frequency-penalty",
+        type=float,
+        default=0.0,
+        help="Frequency penalty (default: 0.0)",
+    )
+    parser.add_argument(
         "--seed",
         type=int,
         default=42,
-        help="Random seed for reproducibility",
+        help="Random seed for reproducibility and model request seed",
     )
     parser.add_argument(
         "--ar-extra-body",
@@ -607,6 +631,11 @@ def call_model(
     prompt: str,
     max_tokens: int,
     temperature: float,
+    top_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    seed: int,
     extra_body: Optional[Dict[str, Any]] = None,
 ) -> Tuple[
     str,
@@ -781,6 +810,10 @@ def call_model(
     selected_category = None
     selected_decision = None
     selected_model_header = None
+    raw_response = None
+    request_extra_body = dict(extra_body) if extra_body else {}
+    if top_k >= 0:
+        request_extra_body["top_k"] = top_k
 
     try:
         # Prefer raw response mode to read router decision headers; fallback to
@@ -791,7 +824,11 @@ def call_model(
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=temperature,
-                extra_body=extra_body if extra_body else None,
+                top_p=top_p,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+                seed=seed,
+                extra_body=request_extra_body if request_extra_body else None,
             )
             response = raw_response.parse()
             (
@@ -819,7 +856,11 @@ def call_model(
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=temperature,
-                extra_body=extra_body if extra_body else None,
+                top_p=top_p,
+                presence_penalty=presence_penalty,
+                frequency_penalty=frequency_penalty,
+                seed=seed,
+                extra_body=request_extra_body if request_extra_body else None,
             )
             (
                 selected_category,
@@ -946,6 +987,11 @@ def process_question_single(
     prompt_mode: str,
     max_tokens: int,
     temperature: float,
+    top_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    seed: int,
     ar_extra_body: Optional[Dict[str, Any]] = None,
     mode_label: Optional[str] = None,
     debug_log_request_response: bool = False,
@@ -975,6 +1021,11 @@ def process_question_single(
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": max_tokens,
             "temperature": temperature,
+            "top_p": top_p,
+            "top_k": top_k,
+            "presence_penalty": presence_penalty,
+            "frequency_penalty": frequency_penalty,
+            "seed": seed,
             "extra_body": extra_body,
             "prompt_mode": prompt_mode,
             "mode_label": mode_label or prompt_mode,
@@ -992,7 +1043,17 @@ def process_question_single(
         selected_decision,
         http_response_details,
     ) = call_model(
-        client, model, prompt, max_tokens, temperature, extra_body=extra_body
+        client,
+        model,
+        prompt,
+        max_tokens,
+        temperature,
+        top_p,
+        top_k,
+        presence_penalty,
+        frequency_penalty,
+        seed,
+        extra_body=extra_body,
     )
     end_time = time.time()
 
@@ -1086,6 +1147,11 @@ def evaluate_model_router_transparent(
     concurrent_requests: int,
     max_tokens: int,
     temperature: float,
+    top_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    seed: int,
     debug_log_request_response: bool = False,
     debug_print_request_response: bool = False,
 ) -> pd.DataFrame:
@@ -1110,6 +1176,11 @@ def evaluate_model_router_transparent(
                     "NR",
                     max_tokens,
                     temperature,
+                    top_p,
+                    top_k,
+                    presence_penalty,
+                    frequency_penalty,
+                    seed,
                     None,
                     mode_label="Router_NR",
                     debug_log_request_response=debug_log_request_response,
@@ -1155,6 +1226,11 @@ def evaluate_model_vllm_multimode(
     concurrent_requests: int,
     max_tokens: int,
     temperature: float,
+    top_p: float,
+    top_k: int,
+    presence_penalty: float,
+    frequency_penalty: float,
+    seed: int,
     exec_modes: List[str],
     debug_log_request_response: bool = False,
     debug_print_request_response: bool = False,
@@ -1239,6 +1315,11 @@ def evaluate_model_vllm_multimode(
                 prompt_mode,
                 max_tokens,
                 temperature,
+                top_p,
+                top_k,
+                presence_penalty,
+                frequency_penalty,
+                seed,
                 ar_extra_body=extra_body,
                 mode_label=label,
                 debug_log_request_response=debug_log_request_response,
@@ -1693,6 +1774,11 @@ def main():
                 concurrent_requests=args.concurrent_requests,
                 max_tokens=model_tokens,
                 temperature=args.temperature,
+                top_p=args.top_p,
+                top_k=args.top_k,
+                presence_penalty=args.presence_penalty,
+                frequency_penalty=args.frequency_penalty,
+                seed=args.seed,
                 debug_log_request_response=args.debug_log_request_response,
                 debug_print_request_response=args.debug_print_request_response,
             )
@@ -1723,6 +1809,11 @@ def main():
                 concurrent_requests=args.concurrent_requests,
                 max_tokens=model_tokens,
                 temperature=args.temperature,
+                top_p=args.top_p,
+                top_k=args.top_k,
+                presence_penalty=args.presence_penalty,
+                frequency_penalty=args.frequency_penalty,
+                seed=args.seed,
                 exec_modes=args.vllm_exec_modes,
                 debug_log_request_response=args.debug_log_request_response,
                 debug_print_request_response=args.debug_print_request_response,

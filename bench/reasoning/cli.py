@@ -72,6 +72,42 @@ For more detailed usage, see: https://vllm-semantic-router.com/docs/benchmarking
         help="Output directory for results",
     )
     test_parser.add_argument(
+        "--temperature",
+        type=float,
+        default=0.0,
+        help="Sampling temperature (default: 0.0)",
+    )
+    test_parser.add_argument(
+        "--top-p",
+        type=float,
+        default=1.0,
+        help="Top-p nucleus sampling (default: 1.0)",
+    )
+    test_parser.add_argument(
+        "--top-k",
+        type=int,
+        default=-1,
+        help="Top-k sampling (default: -1, disabled)",
+    )
+    test_parser.add_argument(
+        "--presence-penalty",
+        type=float,
+        default=0.0,
+        help="Presence penalty (default: 0.0)",
+    )
+    test_parser.add_argument(
+        "--frequency-penalty",
+        type=float,
+        default=0.0,
+        help="Frequency penalty (default: 0.0)",
+    )
+    test_parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed and model request seed (default: 42)",
+    )
+    test_parser.add_argument(
         "--debug-log-request-response",
         action="store_true",
         help="Include full request/response fields in output CSV logs.",
@@ -257,8 +293,18 @@ def run_test(args):
         str(args.samples),
         "--output-dir",
         args.output_dir,
+        "--temperature",
+        str(args.temperature),
+        "--top-p",
+        str(args.top_p),
+        "--top-k",
+        str(args.top_k),
+        "--presence-penalty",
+        str(args.presence_penalty),
+        "--frequency-penalty",
+        str(args.frequency_penalty),
         "--seed",
-        "42",
+        str(args.seed),
     ]
 
     if args.mode in ["router", "both"]:
