@@ -71,6 +71,16 @@ For more detailed usage, see: https://vllm-semantic-router.com/docs/benchmarking
         default="results/quick_test",
         help="Output directory for results",
     )
+    test_parser.add_argument(
+        "--debug-log-request-response",
+        action="store_true",
+        help="Include full request/response fields in output CSV logs.",
+    )
+    test_parser.add_argument(
+        "--debug-print-request-response",
+        action="store_true",
+        help="Print full request/response per example to stdout.",
+    )
 
     # Compare command - full router vs vLLM comparison
     compare_parser = subparsers.add_parser(
@@ -267,6 +277,12 @@ def run_test(args):
                 "http://127.0.0.1:8002/v1",
             ]
         )
+
+    if args.debug_log_request_response:
+        cmd.append("--debug-log-request-response")
+
+    if args.debug_print_request_response:
+        cmd.append("--debug-print-request-response")
 
     return subprocess.call(cmd)
 

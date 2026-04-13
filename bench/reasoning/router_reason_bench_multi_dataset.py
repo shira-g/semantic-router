@@ -180,6 +180,16 @@ def parse_args():
             "If empty, AR modes are disabled."
         ),
     )
+    parser.add_argument(
+        "--debug-log-request-response",
+        action="store_true",
+        help="Include full request and response fields in output CSV logs (debug only).",
+    )
+    parser.add_argument(
+        "--debug-print-request-response",
+        action="store_true",
+        help="Print full request and response per example to stdout (debug only).",
+    )
     return parser.parse_args()
 
 
@@ -607,6 +617,7 @@ def call_model(
     Optional[str],
     Optional[str],
     Optional[str],
+    Optional[Dict[str, Any]],
 ]:
     """Call model with given parameters."""
 
@@ -697,6 +708,76 @@ def call_model(
 
         return selected_category_local, selected_decision_local, selected_model_local
 
+    def _extract_http_response_details(raw_obj: Any) -> Optional[Dict[str, Any]]:
+        """Extract HTTP response details (status, headers, body) for debugging."""
+        if raw_obj is None:
+            return None
+
+        details = {}
+
+        # Try to get status code from various wrapper shapes
+        status_code = None
+        for attr in ["status_code", "http_response.status_code", "response.status_code", "_response.status_code"]:
+            if "." in attr:
+                parts = attr.split(".")
+                obj = raw_obj
+                for part in parts:
+                    obj = getattr(obj, part, None)
+                    if obj is None:
+                        break
+                if obj is not None:
+                    status_code = obj
+                    break
+            else:
+                status_code = getattr(raw_obj, attr, None)
+                if status_code is not None:
+                    break
+
+        if status_code is not None:
+            details["status_code"] = status_code
+
+        # Extract headers from various wrapper shapes
+        headers_dict = {}
+        header_candidates = [
+            getattr(raw_obj, "headers", None),
+            getattr(getattr(raw_obj, "http_response", None), "headers", None),
+            getattr(getattr(raw_obj, "response", None), "headers", None),
+            getattr(getattr(raw_obj, "_response", None), "headers", None),
+        ]
+
+        for headers_obj in header_candidates:
+            if headers_obj is None:
+                continue
+            try:
+                if hasattr(headers_obj, "items"):
+                    headers_dict = dict(headers_obj.items())
+                else:
+                    headers_dict = dict(headers_obj)
+                if headers_dict:
+                    break
+            except Exception:
+                pass
+
+        if headers_dict:
+            details["headers"] = headers_dict
+
+        # Try to get response body/content
+        content = None
+        for attr in ["content", "text", "body", "_content"]:
+            content = getattr(raw_obj, attr, None)
+            if content is not None:
+                break
+
+        if content is not None:
+            # Truncate very large responses for logging
+            if isinstance(content, str) and len(content) > 5000:
+                details["body"] = content[:5000] + f"\n... (truncated, total {len(content)} chars)"
+            else:
+                details["body"] = content
+
+        return details if details else None
+
+
     selected_category = None
     selected_decision = None
     selected_model_header = None
@@ -762,6 +843,7 @@ def call_model(
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
         total_tokens = getattr(usage, "total_tokens", None) if usage else None
+        http_response_details = _extract_http_response_details(raw_response)
         return (
             text,
             True,
@@ -771,6 +853,7 @@ def call_model(
             responser,
             selected_category,
             selected_decision,
+            http_response_details,
         )
     except Exception as e:
         # Keep any router decision headers if the provider exposes an HTTP response
@@ -799,6 +882,7 @@ def call_model(
             error_text += f" [status={status_code}]"
 
         print(f"Model call failed: {error_text}")
+        http_response_details = _extract_http_response_details(response_obj)
         return (
             error_text,
             False,
@@ -808,6 +892,7 @@ def call_model(
             selected_model_header,
             selected_category,
             selected_decision,
+            http_response_details,
         )
 
 
@@ -863,6 +948,8 @@ def process_question_single(
     temperature: float,
     ar_extra_body: Optional[Dict[str, Any]] = None,
     mode_label: Optional[str] = None,
+    debug_log_request_response: bool = False,
+    debug_print_request_response: bool = False,
 ) -> Dict[str, Any]:
     """Process a single question with the model."""
     # Format prompt based on mode
@@ -880,6 +967,19 @@ def process_question_single(
         # For direct vLLM: ar_extra_body contains reasoning parameters
         extra_body = ar_extra_body
 
+    request_payload = None
+    if debug_log_request_response or debug_print_request_response:
+        # Build a reproducible request payload when debug logging/printing is enabled.
+        request_payload = {
+            "model": model,
+            "messages": [{"role": "user", "content": prompt}],
+            "max_tokens": max_tokens,
+            "temperature": temperature,
+            "extra_body": extra_body,
+            "prompt_mode": prompt_mode,
+            "mode_label": mode_label or prompt_mode,
+        }
+
     start_time = time.time()
     (
         response_text,
@@ -890,12 +990,38 @@ def process_question_single(
         responser,
         predicted_category,
         selected_decision,
+        http_response_details,
     ) = call_model(
         client, model, prompt, max_tokens, temperature, extra_body=extra_body
     )
     end_time = time.time()
 
     predicted_answer = extract_answer(response_text, question) if success else None
+
+    if debug_print_request_response:
+        print("\n" + "=" * 30 + " DEBUG REQUEST/RESPONSE " + "=" * 30)
+        print(
+            json.dumps(
+                request_payload,
+                ensure_ascii=False,
+                indent=2,
+            )
+        )
+        print("--- HTTP RESPONSE ---")
+        if http_response_details:
+            print(
+                json.dumps(
+                    http_response_details,
+                    ensure_ascii=False,
+                    indent=2,
+                    default=str,
+                )
+            )
+        else:
+            print("(No HTTP response details captured)")
+        print("--- RESPONSE TEXT ---")
+        print(response_text)
+        print("=" * 84 + "\n")
 
     # Compare predicted answer with correct answer (handle multiple formats)
     is_correct = False
@@ -919,7 +1045,7 @@ def process_question_single(
                 predicted_answer, question.correct_answer
             )
 
-    return {
+    result = {
         "mode": prompt_mode,
         "mode_label": mode_label or prompt_mode,
         "requested_model": model,
@@ -941,6 +1067,15 @@ def process_question_single(
         "responser": responser,
     }
 
+    if debug_log_request_response:
+        result["request_prompt"] = prompt
+        result["request_payload"] = json.dumps(request_payload, ensure_ascii=False)
+        result["http_response_details"] = json.dumps(
+            http_response_details, ensure_ascii=False, default=str
+        ) if http_response_details else None
+
+    return result
+
 
 def evaluate_model_router_transparent(
     questions: List[Question],
@@ -951,6 +1086,8 @@ def evaluate_model_router_transparent(
     concurrent_requests: int,
     max_tokens: int,
     temperature: float,
+    debug_log_request_response: bool = False,
+    debug_print_request_response: bool = False,
 ) -> pd.DataFrame:
     """Evaluate model in router-transparent mode."""
     client = OpenAI(base_url=endpoint, api_key=api_key or None, timeout=300.0)
@@ -975,6 +1112,8 @@ def evaluate_model_router_transparent(
                     temperature,
                     None,
                     mode_label="Router_NR",
+                    debug_log_request_response=debug_log_request_response,
+                    debug_print_request_response=debug_print_request_response,
                 )
             )
 
@@ -1017,6 +1156,8 @@ def evaluate_model_vllm_multimode(
     max_tokens: int,
     temperature: float,
     exec_modes: List[str],
+    debug_log_request_response: bool = False,
+    debug_print_request_response: bool = False,
 ) -> pd.DataFrame:
     """Run vLLM with 2-3 realistic reasoning scenarios.
 
@@ -1100,6 +1241,8 @@ def evaluate_model_vllm_multimode(
                 temperature,
                 ar_extra_body=extra_body,
                 mode_label=label,
+                debug_log_request_response=debug_log_request_response,
+                debug_print_request_response=debug_print_request_response,
             )
             local_records.append(rec)
         return local_records
@@ -1225,13 +1368,22 @@ def save_results(
     model: str,
     dataset_name: str,
     output_dir: str,
+    debug_log_request_response: bool = False,
 ):
     """Save results to files."""
     model_name = model.replace("/", "_")
     model_dir = os.path.join(output_dir, f"{dataset_name}_{model_name}")
     os.makedirs(model_dir, exist_ok=True)
 
-    results_df.to_csv(os.path.join(model_dir, "detailed_results.csv"), index=False)
+    detailed_results_df = results_df.copy()
+    if not debug_log_request_response:
+        detailed_results_df = detailed_results_df.drop(
+            columns=["request_prompt", "request_payload", "http_response_details", "model_response"],
+            errors="ignore",
+        )
+    detailed_results_df.to_csv(
+        os.path.join(model_dir, "detailed_results.csv"), index=False
+    )
 
     # Per-example prediction log focused on the routing/category prediction signal.
     # Add explicit source/reason fields so fallback values (for example "MoM") are
@@ -1351,6 +1503,32 @@ def save_results(
         "success",
         "response_time",
     ]
+    if debug_log_request_response:
+        preferred_cols = [
+            "question_id",
+            "mode_label",
+            "requested_model",
+            "request_prompt",
+            "request_payload",
+            "http_response_details",
+            "model_response",
+            "category",
+            "predicted_category",
+            "predicted_category_source",
+            "predicted_category_reason",
+            "selected_decision",
+            "predicted_answer",
+            "correct_answer",
+            "is_correct",
+            "success",
+            "response_time",
+        ]
+
+    if not debug_log_request_response:
+        prediction_log_df = prediction_log_df.drop(
+            columns=["request_prompt", "request_payload", "http_response_details", "model_response"],
+            errors="ignore",
+        )
     existing_cols = [c for c in preferred_cols if c in prediction_log_df.columns]
     trailing_cols = [c for c in prediction_log_df.columns if c not in existing_cols]
     prediction_log_df = prediction_log_df[existing_cols + trailing_cols]
@@ -1515,6 +1693,8 @@ def main():
                 concurrent_requests=args.concurrent_requests,
                 max_tokens=model_tokens,
                 temperature=args.temperature,
+                debug_log_request_response=args.debug_log_request_response,
+                debug_print_request_response=args.debug_print_request_response,
             )
             analysis = analyze_results(rt_df)
             save_results(
@@ -1523,6 +1703,7 @@ def main():
                 model=f"router::{model}",
                 dataset_name=dataset_info.name,
                 output_dir=args.output_dir,
+                debug_log_request_response=args.debug_log_request_response,
             )
 
     # Direct vLLM evaluation (NR/XC with reasoning ON/OFF)
@@ -1543,6 +1724,8 @@ def main():
                 max_tokens=model_tokens,
                 temperature=args.temperature,
                 exec_modes=args.vllm_exec_modes,
+                debug_log_request_response=args.debug_log_request_response,
+                debug_print_request_response=args.debug_print_request_response,
             )
             analysis = analyze_results(vdf)
             save_results(
@@ -1551,6 +1734,7 @@ def main():
                 model=f"vllm::{model}",
                 dataset_name=dataset_info.name,
                 output_dir=args.output_dir,
+                debug_log_request_response=args.debug_log_request_response,
             )
 
 
