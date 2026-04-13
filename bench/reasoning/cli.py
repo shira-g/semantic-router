@@ -259,12 +259,12 @@ def run_test(args):
             [
                 "--run-vllm",
                 "--vllm-models",
-                "gpt-oss",
+                "phi3",
                 "--vllm-exec-modes",
                 "NR",
                 "NR_REASONING",
                 "--vllm-endpoint",
-                "http://127.0.0.1:8003/v1",
+                "http://127.0.0.1:8002/v1",
             ]
         )
 

@@ -598,28 +598,217 @@ def call_model(
     max_tokens: int,
     temperature: float,
     extra_body: Optional[Dict[str, Any]] = None,
-) -> Tuple[str, bool, Optional[int], Optional[int], Optional[int], Optional[int]]:
+) -> Tuple[
+    str,
+    bool,
+    Optional[int],
+    Optional[int],
+    Optional[int],
+    Optional[str],
+    Optional[str],
+    Optional[str],
+]:
     """Call model with given parameters."""
+
+    def _normalize_header_value(v: Any) -> Optional[str]:
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s if s else None
+
+    def _first_header(headers_obj: Any, keys: List[str]) -> Optional[str]:
+        """Read first non-empty header value from a case-insensitive header object."""
+        if headers_obj is None:
+            return None
+
+        # Try direct lookups first (works for httpx Headers / dict-like objects).
+        for key in keys:
+            try:
+                val = headers_obj.get(key)
+            except Exception:
+                val = None
+            norm = _normalize_header_value(val)
+            if norm:
+                return norm
+
+        # Fallback: iterate all headers and compare lowercase keys.
+        items: List[Tuple[str, Any]] = []
+        try:
+            items = list(headers_obj.items())
+        except Exception:
+            items = []
+
+        if items:
+            lowered = {str(k).lower(): v for k, v in items}
+            for key in keys:
+                norm = _normalize_header_value(lowered.get(key.lower()))
+                if norm:
+                    return norm
+
+        return None
+
+    def _extract_router_headers(raw_obj: Any) -> Tuple[Optional[str], Optional[str], Optional[str]]:
+        """Extract category/decision/model from any known response wrapper shape."""
+        if raw_obj is None:
+            return None, None, None
+
+        header_candidates = [
+            getattr(raw_obj, "headers", None),
+            getattr(getattr(raw_obj, "http_response", None), "headers", None),
+            getattr(getattr(raw_obj, "response", None), "headers", None),
+            getattr(getattr(raw_obj, "_response", None), "headers", None),
+        ]
+
+        selected_category_local = None
+        selected_decision_local = None
+        selected_model_local = None
+
+        for headers_obj in header_candidates:
+            if headers_obj is None:
+                continue
+
+            if not selected_category_local:
+                selected_category_local = _first_header(
+                    headers_obj,
+                    [
+                        "x-vsr-selected-category",
+                        "x-selected-category",
+                        "x-vsr-matched-domains",
+                        "x-vsr-domain",
+                    ],
+                )
+            if not selected_decision_local:
+                selected_decision_local = _first_header(
+                    headers_obj,
+                    ["x-vsr-selected-decision", "x-selected-decision"],
+                )
+            if not selected_model_local:
+                selected_model_local = _first_header(
+                    headers_obj,
+                    ["x-vsr-selected-model", "x-selected-model"],
+                )
+
+            if selected_category_local and selected_decision_local and selected_model_local:
+                break
+
+        # If matched domains are present, normalize to a single domain label.
+        if selected_category_local and ("," in selected_category_local or "|" in selected_category_local):
+            selected_category_local = re.split(r"[,|]", selected_category_local)[0].strip()
+
+        return selected_category_local, selected_decision_local, selected_model_local
+
+    selected_category = None
+    selected_decision = None
+    selected_model_header = None
+
     try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=[{"role": "user", "content": prompt}],
-            max_tokens=max_tokens,
-            temperature=temperature,
-            extra_body=extra_body if extra_body else None,
-        )
+        # Prefer raw response mode to read router decision headers; fallback to
+        # regular completion API if raw response is unavailable.
+        try:
+            raw_response = client.chat.completions.with_raw_response.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                extra_body=extra_body if extra_body else None,
+            )
+            response = raw_response.parse()
+            (
+                selected_category,
+                selected_decision,
+                selected_model_header,
+            ) = _extract_router_headers(raw_response)
+
+            # response = client.chat.completions.create(
+            #     model=model,
+            #     messages=[{"role": "user", "content": prompt}],
+            #     max_tokens=max_tokens,
+            #     temperature=temperature,
+            #     extra_body=extra_body if extra_body else None,
+            # )
+            # (
+            #     selected_category,
+            #     selected_decision,
+            #     selected_model_header,
+            # ) = _extract_router_headers(response)
+
+        except AttributeError:
+            response = client.chat.completions.create(
+                model=model,
+                messages=[{"role": "user", "content": prompt}],
+                max_tokens=max_tokens,
+                temperature=temperature,
+                extra_body=extra_body if extra_body else None,
+            )
+            (
+                selected_category,
+                selected_decision,
+                selected_model_header,
+            ) = _extract_router_headers(response)
+
+        # Normalize empty-string headers to None for cleaner downstream fallback.
+        if selected_category == "":
+            selected_category = None
+        if selected_decision == "":
+            selected_decision = None
+        if selected_model_header == "":
+            selected_model_header = None
+
         # For reasoning models, content might be in reasoning_content instead of content
-        responser = response.model
+        responser = selected_model_header or response.model
         message = response.choices[0].message
         text = message.content or getattr(message, "reasoning_content", None) or ""
         usage = getattr(response, "usage", None)
         prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
         completion_tokens = getattr(usage, "completion_tokens", None) if usage else None
         total_tokens = getattr(usage, "total_tokens", None) if usage else None
-        return text, True, prompt_tokens, completion_tokens, total_tokens, responser
+        return (
+            text,
+            True,
+            prompt_tokens,
+            completion_tokens,
+            total_tokens,
+            responser,
+            selected_category,
+            selected_decision,
+        )
     except Exception as e:
-        print(f"Model call failed: {e}")
-        return "ERROR", False, None, None, None, None
+        # Keep any router decision headers if the provider exposes an HTTP response
+        # object on exceptions (useful for debugging routing on failed calls).
+        response_obj = getattr(e, "response", None)
+        (
+            selected_category,
+            selected_decision,
+            selected_model_header,
+        ) = _extract_router_headers(response_obj)
+
+        # Normalize empty headers after exception handling too.
+        if selected_category == "":
+            selected_category = None
+        if selected_decision == "":
+            selected_decision = None
+        if selected_model_header == "":
+            selected_model_header = None
+
+        status_code = None
+        if response_obj is not None:
+            status_code = getattr(response_obj, "status_code", None)
+
+        error_text = f"ERROR: {type(e).__name__}: {e}"
+        if status_code is not None:
+            error_text += f" [status={status_code}]"
+
+        print(f"Model call failed: {error_text}")
+        return (
+            error_text,
+            False,
+            None,
+            None,
+            None,
+            selected_model_header,
+            selected_category,
+            selected_decision,
+        )
 
 
 def build_extra_body_for_model(
@@ -692,7 +881,16 @@ def process_question_single(
         extra_body = ar_extra_body
 
     start_time = time.time()
-    response_text, success, prompt_tokens, completion_tokens, total_tokens, responser = call_model(
+    (
+        response_text,
+        success,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        responser,
+        predicted_category,
+        selected_decision,
+    ) = call_model(
         client, model, prompt, max_tokens, temperature, extra_body=extra_body
     )
     end_time = time.time()
@@ -724,8 +922,11 @@ def process_question_single(
     return {
         "mode": prompt_mode,
         "mode_label": mode_label or prompt_mode,
+        "requested_model": model,
         "question_id": question.question_id,
         "category": question.category,
+        "predicted_category": predicted_category,
+        "selected_decision": selected_decision,
         "question": question.question,
         "options": question.options,
         "correct_answer": question.correct_answer,
@@ -760,7 +961,7 @@ def evaluate_model_router_transparent(
     with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
         futures = []
         for i, question in enumerate(questions):
-            if i < 4 or i >= 5:
+            if i < 0 or i >= 1:
                 continue  # Only run the x question for router evaluation to save time
             futures.append(
                 executor.submit(
@@ -865,12 +1066,12 @@ def evaluate_model_vllm_multimode(
     # Base modes (always included)
     # Always use explicit True/False for reasoning-capable models to ensure consistent behavior
     mode_variants: List[Tuple[str, str, Optional[bool]]] = [
-        # ("VLLM_NR", "NR", False),  # Plain prompt, reasoning OFF (baseline)
-        (
-            "VLLM_NR_REASONING",
-            "NR",
-            True,
-        ),  # Plain prompt, reasoning ON (model reasoning)
+        ("VLLM_NR", "NR", False),  # Plain prompt, reasoning OFF (baseline)
+        # (
+        #     "VLLM_NR_REASONING",
+        #     "NR",
+        #     True,
+        # ),  # Plain prompt, reasoning ON (model reasoning)
     ]
 
     # Add XC mode only if dataset has CoT content
@@ -1031,6 +1232,131 @@ def save_results(
     os.makedirs(model_dir, exist_ok=True)
 
     results_df.to_csv(os.path.join(model_dir, "detailed_results.csv"), index=False)
+
+    # Per-example prediction log focused on the routing/category prediction signal.
+    # Add explicit source/reason fields so fallback values (for example "MoM") are
+    # easy to interpret when x-vsr-selected-category is absent.
+    prediction_log_df = results_df.copy()
+    if "predicted_category" not in prediction_log_df.columns:
+        prediction_log_df["predicted_category"] = None
+
+    def _has_value(v: Any) -> bool:
+        if pd.isna(v):
+            return False
+        return str(v).strip() != ""
+
+    def _extract_category_from_text(v: Any) -> Optional[str]:
+        """Best-effort extraction of routed category from debug/decision text."""
+        if not _has_value(v):
+            return None
+
+        text = str(v)
+
+        # Common router log style: domain=[computer science]
+        match = re.search(r"(?:domain|category)\s*=\s*\[\s*([^\]]+?)\s*\]", text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+
+        # JSON-like style: "category": "computer science"
+        match = re.search(r'"category"\s*:\s*"([^"]+?)"', text, re.IGNORECASE)
+        if match:
+            return match.group(1).strip()
+
+        return None
+
+    def _resolve_predicted_category(row: pd.Series) -> Tuple[str, str, str]:
+        header_category = row.get("predicted_category")
+        decision = row.get("selected_decision")
+        responser = row.get("responser")
+        requested_model = row.get("requested_model")
+        success = bool(row.get("success")) if "success" in row else True
+        model_response = row.get("model_response")
+
+        if _has_value(header_category):
+            category = str(header_category)
+            if _has_value(decision):
+                reason = (
+                    "Router selected category from x-vsr-selected-category "
+                    f"(x-vsr-selected-decision={decision})"
+                )
+            else:
+                reason = "Router selected category from x-vsr-selected-category"
+            return category, "x_vsr_selected_category", reason
+
+        decision_category = _extract_category_from_text(decision)
+        if decision_category:
+            reason = (
+                "x-vsr-selected-category missing; inferred category from "
+                f"x-vsr-selected-decision (decision={decision})"
+            )
+            return decision_category, "x_vsr_selected_decision_inferred", reason
+
+        response_category = _extract_category_from_text(model_response)
+        if response_category:
+            reason = (
+                "x-vsr-selected-category missing; inferred category from "
+                "model_response text"
+            )
+            return response_category, "model_response_inferred", reason
+
+        if not success:
+            reason = (
+                "x-vsr-selected-category missing on failed request; category is "
+                "unknown (request did not return router headers)"
+            )
+            return "unknown", "missing_on_failed_request", reason
+
+        if _has_value(requested_model):
+            requested_model_str = str(requested_model)
+            reason = (
+                "x-vsr-selected-category missing; used requested_model fallback "
+                f"(requested_model={requested_model_str})"
+            )
+            return requested_model_str, "requested_model_fallback", reason
+
+        if _has_value(responser):
+            responder_str = str(responser)
+            reason = (
+                "x-vsr-selected-category missing; used responder fallback "
+                f"(responser={responder_str})"
+            )
+            return responder_str, "responser_fallback", reason
+
+        reason = (
+            "x-vsr-selected-category missing; used run model fallback "
+            f"(model={model})"
+        )
+        return model, "run_model_fallback", reason
+
+    prediction_log_df[
+        [
+            "predicted_category",
+            "predicted_category_source",
+            "predicted_category_reason",
+        ]
+    ] = prediction_log_df.apply(_resolve_predicted_category, axis=1, result_type="expand")
+
+    preferred_cols = [
+        "question_id",
+        "mode_label",
+        "requested_model",
+        "category",
+        "predicted_category",
+        "predicted_category_source",
+        "predicted_category_reason",
+        "selected_decision",
+        "predicted_answer",
+        "correct_answer",
+        "is_correct",
+        "success",
+        "response_time",
+    ]
+    existing_cols = [c for c in preferred_cols if c in prediction_log_df.columns]
+    trailing_cols = [c for c in prediction_log_df.columns if c not in existing_cols]
+    prediction_log_df = prediction_log_df[existing_cols + trailing_cols]
+    prediction_log_df.to_csv(
+        os.path.join(model_dir, "predicted_category_log.csv"), index=False
+    )
 
     with open(os.path.join(model_dir, "summary.json"), "w") as f:
         json.dump(

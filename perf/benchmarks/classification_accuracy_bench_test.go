@@ -4,6 +4,7 @@ package benchmarks
 
 import (
 	"bufio"
+	"encoding/csv"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -29,13 +30,101 @@ type intentGoldExample struct {
 }
 
 type intentGoldRow struct {
-	Text       string `json:"text"`
-	Question   string `json:"question"`
-	Options    []string `json:"options"`
+	Text         string   `json:"text"`
+	Question     string   `json:"question"`
+	Options      []string `json:"options"`
 	RouterPrompt string `json:"router_prompt"`
-	GoldIntent string `json:"gold_intent"`
-	Label      string `json:"label"`
-	Intent     string `json:"intent"`
+	GoldIntent   string   `json:"gold_intent"`
+	Label        string   `json:"label"`
+	Intent       string   `json:"intent"`
+}
+
+type intentPredictionLogRow struct {
+	Index             int
+	Mode              string
+	InputText         string
+	GoldIntent        string
+	RawPredictedCategory string
+	PredictedCategory string
+	PredictedCategoryReason string
+	Confidence        float64
+	Threshold         float64
+	IsCorrect         bool
+}
+
+func writeIntentPredictionLog(path string, rows []intentPredictionLogRow) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create log directory: %w", err)
+	}
+
+	f, err := os.Create(path)
+	if err != nil {
+		return fmt.Errorf("create log file: %w", err)
+	}
+	defer f.Close()
+
+	w := csv.NewWriter(f)
+	defer w.Flush()
+
+	if err := w.Write([]string{
+		"index",
+		"mode",
+		"input_text",
+		"gold_intent",
+		"raw_predicted_category",
+		"predicted_category",
+		"predicted_category_reason",
+		"confidence",
+		"threshold",
+		"is_correct",
+	}); err != nil {
+		return fmt.Errorf("write csv header: %w", err)
+	}
+
+	for _, row := range rows {
+		if err := w.Write([]string{
+			strconv.Itoa(row.Index),
+			row.Mode,
+			row.InputText,
+			row.GoldIntent,
+			row.RawPredictedCategory,
+			row.PredictedCategory,
+			row.PredictedCategoryReason,
+			fmt.Sprintf("%.6f", row.Confidence),
+			fmt.Sprintf("%.6f", row.Threshold),
+			strconv.FormatBool(row.IsCorrect),
+		}); err != nil {
+			return fmt.Errorf("write csv row: %w", err)
+		}
+	}
+
+	if err := w.Error(); err != nil {
+		return fmt.Errorf("flush csv writer: %w", err)
+	}
+
+	return nil
+}
+
+func resolveIntentPredictionLogPath(mode string) string {
+	fileName := fmt.Sprintf("intent_predicted_category_log_%s.csv", mode)
+
+	// When invoked via `make` from repo root, cwd is typically `perf` and
+	// ../reports is correct. If go test executes with cwd at perf/benchmarks,
+	// ../../reports is the repo-level reports directory.
+	candidates := []string{
+		filepath.Join("..", "reports", fileName),
+		filepath.Join("..", "..", "reports", fileName),
+	}
+
+	for _, p := range candidates {
+		dir := filepath.Dir(p)
+		if st, err := os.Stat(dir); err == nil && st.IsDir() {
+			return p
+		}
+	}
+
+	// Fallback to repo-level reports path relative to perf/benchmarks.
+	return candidates[1]
 }
 
 func resolveIntentGoldDatasetPath() string {
@@ -163,9 +252,15 @@ func runIntentAccuracyBenchmark(b *testing.B, useRouterPrompt bool) {
 	}
 
 	var accuracy float64
+	var finalLogRows []intentPredictionLogRow
+	mode := "raw_text"
+	if useRouterPrompt {
+		mode = "router_prompt"
+	}
 	for i := 0; i < b.N; i++ {
 		correct := 0
 		unknownCount := 0
+		iterLogRows := make([]intentPredictionLogRow, 0, len(examples))
 		for idx, ex := range examples {
 			inputText := ex.Text
 			if useRouterPrompt {
@@ -199,10 +294,24 @@ func runIntentAccuracyBenchmark(b *testing.B, useRouterPrompt bool) {
 				}
 			}
 			confidence := float64(results.IntentResults[0].Confidence)
-			predicted := normalizeIntentLabel(results.IntentResults[0].Category)
+			rawPredicted := normalizeIntentLabel(results.IntentResults[0].Category)
+			predicted := rawPredicted
+			reason := fmt.Sprintf(
+				"classifier returned %q with confidence=%.6f (threshold=%.6f)",
+				rawPredicted,
+				confidence,
+				threshold,
+			)
 			if confidence < threshold {
 				predicted = INTENT_UNKNOWN_LABEL
 				unknownCount++
+				reason = fmt.Sprintf(
+					"confidence %.6f below threshold %.6f; downgraded to %q (raw=%q)",
+					confidence,
+					threshold,
+					INTENT_UNKNOWN_LABEL,
+					rawPredicted,
+				)
 			}
 			if os.Getenv(INTENT_COMPARE_DEBUG_ENV) == "1" {
 				flow := "perf"
@@ -222,20 +331,37 @@ func runIntentAccuracyBenchmark(b *testing.B, useRouterPrompt bool) {
 			if predicted == normalizedGold[idx] {
 				correct++
 			}
+
+			iterLogRows = append(iterLogRows, intentPredictionLogRow{
+				Index:                   idx,
+				Mode:                    mode,
+				InputText:               inputText,
+				GoldIntent:              normalizedGold[idx],
+				RawPredictedCategory:    rawPredicted,
+				PredictedCategory:       predicted,
+				PredictedCategoryReason: reason,
+				Confidence:              confidence,
+				Threshold:               threshold,
+				IsCorrect:               predicted == normalizedGold[idx],
+			})
 		}
 		accuracy = float64(correct) / float64(len(examples))
 		if i == b.N-1 {
 			b.ReportMetric(float64(unknownCount), "intent_unknown_count")
 			b.ReportMetric((float64(unknownCount)/float64(len(examples)))*100.0, "intent_unknown_pct")
+			finalLogRows = iterLogRows
 		}
 	}
 
 	b.StopTimer()
 	b.ReportMetric(accuracy*100, "intent_acc_pct")
-	mode := "raw_text"
-	if useRouterPrompt {
-		mode = "router_prompt"
+	logFilePath := resolveIntentPredictionLogPath(mode)
+	if err := writeIntentPredictionLog(logFilePath, finalLogRows); err != nil {
+		b.Logf("failed to write predicted category log: %v", err)
+	} else {
+		b.Logf("predicted category log: %s", logFilePath)
 	}
+
 	b.Logf("dataset=%s mode=%s samples=%d threshold=%.4f intent_accuracy=%.2f%%", datasetPath, mode, len(examples), threshold, accuracy*100)
 }
 
