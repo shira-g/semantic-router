@@ -1235,8 +1235,8 @@ def evaluate_model_router_transparent(
     with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
         futures = []
         for i, question in enumerate(questions):
-            if i < 0 or i >= 1:
-                continue  # Only run the x question for router evaluation to save time
+            # if i < 0 or i >= 1:
+            #     continue  # Only run the x question for router evaluation to save time
             futures.append(
                 executor.submit(
                     process_question_single,
@@ -1527,12 +1527,25 @@ def save_results(
     model_dir = os.path.join(output_dir, f"{dataset_name}_{model_name}")
     os.makedirs(model_dir, exist_ok=True)
 
+    def _csv_safe_value(value: Any) -> Any:
+        if not isinstance(value, str):
+            return value
+        return value.replace("\r\n", "\\n").replace("\r", "\\n").replace("\n", "\\n")
+
+    def _make_csv_safe(df: pd.DataFrame) -> pd.DataFrame:
+        safe_df = df.copy()
+        for column in safe_df.columns:
+            if safe_df[column].dtype == object:
+                safe_df[column] = safe_df[column].map(_csv_safe_value)
+        return safe_df
+
     detailed_results_df = results_df.copy()
     if not debug_log_request_response:
         detailed_results_df = detailed_results_df.drop(
-            columns=["request_prompt", "request_payload", "http_response_details", "model_response"],
+            columns=["request_prompt", "request_payload", "http_response_details"],
             errors="ignore",
         )
+    detailed_results_df = _make_csv_safe(detailed_results_df)
     detailed_results_df.to_csv(
         os.path.join(model_dir, "detailed_results.csv"), index=False
     )
@@ -1644,6 +1657,7 @@ def save_results(
         "question_id",
         "mode_label",
         "requested_model",
+        "model_response",
         "category",
         "predicted_category",
         "predicted_category_source",
@@ -1686,10 +1700,10 @@ def save_results(
                 "final_mutated_request",
                 "final_mutated_request_source",
                 "http_response_details",
-                "model_response",
             ],
             errors="ignore",
         )
+    prediction_log_df = _make_csv_safe(prediction_log_df)
     existing_cols = [c for c in preferred_cols if c in prediction_log_df.columns]
     trailing_cols = [c for c in prediction_log_df.columns if c not in existing_cols]
     prediction_log_df = prediction_log_df[existing_cols + trailing_cols]
