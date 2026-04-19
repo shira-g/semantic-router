@@ -7,7 +7,6 @@ import argparse
 import json
 import os
 import random
-import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Dict, List, Optional, Tuple
@@ -15,14 +14,16 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 import requests
-from datasets import load_dataset
 from openai import OpenAI
 from tqdm import tqdm
 
+import sys
+import pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).parents[3]))
+from bench.reasoning.router_reason_bench_multi_dataset import extract_answer, build_extra_body_for_model
+from bench.reasoning.dataset_factory import DatasetFactory
+
 # Constants
-ANSWER_PATTERN = re.compile(
-    r"(?:answer(?:\sis)?:?\s*)(A|B|C|D|E|F|G|H|I|J)", re.IGNORECASE
-)
 TIMEOUT_SECONDS = 120
 MAX_RETRIES = 1  # No retries
 
@@ -110,43 +111,6 @@ def get_available_models(endpoint: str, api_key: str = "") -> List[str]:
         return []
 
 
-def load_mmlu_pro_dataset(
-    categories: Optional[List[str]] = None,
-    samples_per_category: Optional[int] = None,
-    seed: int = 42,
-) -> Tuple[pd.DataFrame, List[str]]:
-    """Load the MMLU-Pro dataset and filter by categories if specified."""
-    dataset = load_dataset("TIGER-Lab/MMLU-Pro", split="test")
-    df = pd.DataFrame(dataset)
-
-    all_categories = sorted(df["category"].unique().tolist())
-
-    if categories:
-        # Filter by specified categories
-        df = df[df["category"].isin(categories)]
-        if df.empty:
-            valid_categories = ", ".join(all_categories)
-            raise ValueError(
-                f"No data found for specified categories. Valid categories are: {valid_categories}"
-            )
-
-    if samples_per_category:
-        # Sample questions from each category
-        random.seed(seed)
-        np.random.seed(seed)
-        sampled_dfs = []
-        for category in df["category"].unique():
-            category_df = df[df["category"] == category]
-            if len(category_df) > samples_per_category:
-                sampled_df = category_df.sample(samples_per_category, random_state=seed)
-                sampled_dfs.append(sampled_df)
-            else:
-                sampled_dfs.append(category_df)
-        df = pd.concat(sampled_dfs)
-
-    return df, all_categories
-
-
 def format_cot_prompt(question: str, options: List[str], use_cot: bool = False) -> str:
     """Format the prompt for the model with or without Chain-of-Thought."""
     letter_mapping = {
@@ -175,25 +139,19 @@ def format_cot_prompt(question: str, options: List[str], use_cot: bool = False) 
     return prompt
 
 
-def extract_answer(response: str) -> Optional[str]:
-    """Extract the answer letter from the model's response."""
-    # Try to find the answer using regex pattern
-    match = ANSWER_PATTERN.search(response)
-    if match:
-        return match.group(1).upper()
-
-    # If regex fails, look for the last occurrence of A/B/C/D/E/F/G/H/I/J
-    for char in reversed(response):
-        if char.upper() in "ABCDEFGHIJ":
-            return char.upper()
-
-    return None
-
-
 def call_model_with_retry(
-    client: OpenAI, model: str, prompt: str, max_tokens: int, temperature: float
-) -> Tuple[str, bool]:
+    client: OpenAI,
+    model: str,
+    prompt: str,
+    max_tokens: int,
+    temperature: float,
+    use_cot: bool = False,
+) -> Tuple[str, bool, Optional[int], Optional[int], Optional[int]]:
     """Call the model with retry logic for handling timeouts and errors."""
+    extra_body = build_extra_body_for_model(model, reasoning=use_cot) or {}
+    # Deterministic decoding controls for reproducible evaluation runs.
+    extra_body.update({"top_k": -1})
+
     for attempt in range(MAX_RETRIES):
         try:
             response = client.chat.completions.create(
@@ -201,8 +159,21 @@ def call_model_with_retry(
                 messages=[{"role": "user", "content": prompt}],
                 max_tokens=max_tokens,
                 temperature=temperature,
+                top_p=1,
+                presence_penalty=0,
+                frequency_penalty=0,
+                seed=42,
+                extra_body=extra_body,
             )
-            return response.choices[0].message.content, True
+            message = response.choices[0].message
+            text = message.content or getattr(message, "reasoning_content", None) or ""
+            usage = getattr(response, "usage", None)
+            prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
+            completion_tokens = (
+                getattr(usage, "completion_tokens", None) if usage else None
+            )
+            total_tokens = getattr(usage, "total_tokens", None) if usage else None
+            return text, True, prompt_tokens, completion_tokens, total_tokens
         except Exception as e:
             if attempt < MAX_RETRIES - 1:
                 delay = 2**attempt  # Exponential backoff
@@ -212,33 +183,29 @@ def call_model_with_retry(
                 time.sleep(delay)
             else:
                 print(f"Failed to call model after {MAX_RETRIES} attempts: {e}")
-                return "ERROR", False
+                return "ERROR", False, None, None, None
 
 
 def process_question(
     client: OpenAI,
     model: str,
-    question_data: Dict[str, Any],
+    question_data,
     use_cot: bool,
     max_tokens: int,
     temperature: float,
+    dataset=None,
 ) -> Dict[str, Any]:
     """Process a single question and return the results."""
-    question = question_data["question"]
-    options = question_data["options"]
-    correct_answer = question_data["answer"]
+    question = question_data.question
+    options = question_data.options
+    correct_answer = question_data.correct_answer
 
-    prompt = format_cot_prompt(question, options, use_cot)
-
-    # append the prompt, category and correct answer to a file
-    with open("mmlu_pro_vllm_eval.txt", "a") as f:
-        f.write(f"Category: {question_data['category']}\n")
-        f.write(f"Prompt: {prompt}\n")
-        f.write(f"Correct answer: {correct_answer}\n\n")
+    # Keep prompt style plain; use_cot toggles reasoning flags in extra_body.
+    prompt = dataset.format_prompt(question_data, "plain")
 
     start_time = time.time()
-    response_text, success = call_model_with_retry(
-        client, model, prompt, max_tokens, temperature
+    response_text, success, prompt_tokens, completion_tokens, total_tokens = call_model_with_retry(
+        client, model, prompt, max_tokens, temperature, use_cot
     )
     end_time = time.time()
 
@@ -246,22 +213,36 @@ def process_question(
     is_correct = (predicted_answer == correct_answer) if predicted_answer else False
     print(f"Predicted answer: {predicted_answer}, Correct answer: {correct_answer}")
 
+    # Append full per-question details to final log, including token usage.
+    with open("mmlu_pro_vllm_eval.txt", "a") as f:
+        f.write(f"Category: {question_data.category}\n")
+        f.write(f"Prompt: {prompt}\n")
+        f.write(f"Correct answer: {correct_answer}\n")
+        f.write(f"Model response: {response_text}\n")
+        f.write(f"Predicted answer: {predicted_answer}\n")
+        f.write(f"Prompt tokens: {prompt_tokens}\n")
+        f.write(f"Completion tokens: {completion_tokens}\n")
+        f.write(f"Total tokens: {total_tokens}\n\n")
+
     return {
-        "question_id": question_data["question_id"],
+        "question_id": question_data.question_id,
         "question": question,
         "options": options,
         "correct_answer": correct_answer,
         "model_response": response_text,
         "predicted_answer": predicted_answer,
         "is_correct": is_correct,
-        "category": question_data["category"],
+        "category": question_data.category,
         "response_time": end_time - start_time,
         "success": success,
+        "prompt_tokens": prompt_tokens,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
     }
 
 
 def evaluate_model(
-    df: pd.DataFrame,
+    df: list,
     model: str,
     endpoint: str,
     api_key: str,
@@ -269,14 +250,14 @@ def evaluate_model(
     concurrent_requests: int,
     max_tokens: int,
     temperature: float,
+    dataset=None,
 ) -> pd.DataFrame:
     """Evaluate a model on the MMLU-Pro dataset."""
     client = OpenAI(base_url=endpoint, api_key=api_key if api_key else "dummy")
     print(f"Using model: {model}, endpoint: {endpoint}, api_key: {api_key}")
     results = []
 
-    # Convert DataFrame rows to dictionaries for processing
-    questions_data = df.to_dict("records")
+    questions_data = df
 
     with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
         futures = []
@@ -289,6 +270,7 @@ def evaluate_model(
                 use_cot,
                 max_tokens,
                 temperature,
+                dataset,
             )
             futures.append(future)
 
@@ -413,16 +395,18 @@ def main():
 
     # Load dataset
     print("Loading MMLU-Pro dataset...")
-    df, all_categories = load_mmlu_pro_dataset(
+    dataset = DatasetFactory.create_dataset("mmlu-pro")
+    questions, dataset_info = dataset.load_dataset(
         categories=args.categories,
         samples_per_category=args.samples_per_category,
         seed=args.seed,
     )
+    df = questions
 
-    if args.categories is None:
-        print(f"Available categories: {all_categories}")
-
-    print(f"Dataset loaded: {len(df)} questions")
+    print(f"Available categories: {', '.join(dataset_info.categories)}")
+    print(
+        f"Dataset loaded: {len(questions)} questions across {len(dataset_info.categories)} categories"
+    )
 
     # Evaluate each model
     for model in args.models:
@@ -436,6 +420,7 @@ def main():
             concurrent_requests=args.concurrent_requests,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
+            dataset=dataset,
         )
 
         # Analyze and save results
