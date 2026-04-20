@@ -149,6 +149,7 @@ def call_model_with_retry(
 ) -> Tuple[str, bool, Optional[int], Optional[int], Optional[int]]:
     """Call the model with retry logic for handling timeouts and errors."""
     extra_body = build_extra_body_for_model(model, reasoning=use_cot) or {}
+    print(f"extra_body for model {model}: {extra_body}")
     # Deterministic decoding controls for reproducible evaluation runs.
     extra_body.update({"top_k": -1})
 

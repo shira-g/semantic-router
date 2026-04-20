@@ -389,10 +389,10 @@ def build_extra_body_for_model(
     # GPT OSS family
     if "gpt-oss" in lower or "openai/gpt-oss" in lower or "gpt_oss" in lower:
         if reasoning is True:
-            # Put reasoning_effort inside chat_template_kwargs (vLLM requirement)
-            return {"chat_template_kwargs": {"reasoning_effort": "high"}}
+            # reasoning_effort is a top-level field for GPT-OSS (not nested under chat_template_kwargs)
+            return {"reasoning_effort": "high"}
         elif reasoning is False:
-            return {"chat_template_kwargs": {"reasoning_effort": "low"}}
+            return {"reasoning_effort": "low"}
         else:  # reasoning is None (base mode)
             # Base: do not set reasoning_effort - let it use default behavior
             return None

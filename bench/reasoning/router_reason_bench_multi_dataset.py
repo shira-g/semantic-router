@@ -652,8 +652,8 @@ def build_extra_body_for_model(
     # GPT-OSS family (matches reasoning_eval_consolidated.py pattern)
     if "gpt-oss" in lower or "openai/gpt-oss" in lower or "gpt_oss" in lower:
         effort = "high" if reasoning else "low"
-        # Put reasoning_effort inside chat_template_kwargs (vLLM requirement)
-        return {"chat_template_kwargs": {"reasoning_effort": effort}}
+        # reasoning_effort is a top-level field for GPT-OSS (not nested under chat_template_kwargs)
+        return {"reasoning_effort": effort}
 
     # OpenAI models with reasoning parameter
     if "gpt" in lower or "o1" in lower:
