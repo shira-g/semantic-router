@@ -210,7 +210,7 @@ def process_question(
     )
     end_time = time.time()
 
-    predicted_answer = extract_answer(response_text) if success else None
+    predicted_answer = extract_answer(response_text, question_data) if success else None
     is_correct = (predicted_answer == correct_answer) if predicted_answer else False
     print(f"Predicted answer: {predicted_answer}, Correct answer: {correct_answer}")
 
@@ -262,7 +262,9 @@ def evaluate_model(
 
     with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
         futures = []
-        for question_data in questions_data:
+        for i, question_data in enumerate(questions_data):
+            if i < 8 or i >=9:
+                continue  # For quick testing, only process the 5th question. Remove this condition for full evaluation
             future = executor.submit(
                 process_question,
                 client,

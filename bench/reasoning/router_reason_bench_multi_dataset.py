@@ -329,20 +329,38 @@ def extract_answer(response: Any, question: Optional[Question] = None) -> Option
         except Exception:
             response = str(response)
 
-    # First, try to extract structured answer format "ANSWER: [value]"
-    structured_answer = extract_structured_answer(response)
-    if structured_answer:
-        return structured_answer
+    # Strip <think>...</think> reasoning traces (Qwen3-Thinking, DeepSeek-R1, etc.)
+    # so that answer patterns inside the trace don't shadow the final answer.
+    response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
 
     # Determine answer format based on question type
+    structured_answer = extract_structured_answer(response)
     if question and hasattr(question, "options") and question.options:
         if len(question.options) == 2 and set(question.options) == {"Yes", "No"}:
+            if structured_answer:
+                binary_answer = extract_binary_answer(structured_answer)
+                if binary_answer:
+                    return binary_answer
             # Binary Yes/No questions (StrategyQA)
             return extract_binary_answer(response)
         else:
+            if structured_answer:
+                match = re.match(
+                    r'^[\s\[\("]*([A-Z])[\s\]\)".:,;!-]*$', structured_answer
+                )
+                if match:
+                    return match.group(1).upper()
+                # Do not return arbitrary text (e.g. "[letter]") for multiple-choice.
+                # Try parsing a letter from the structured answer; otherwise, fall through
+                # to full-response extraction.
+                from_structured = extract_multiple_choice_answer(structured_answer)
+                if from_structured:
+                    return from_structured
             # Multiple choice questions (GPQA, MMLU, etc.)
             return extract_multiple_choice_answer(response)
     else:
+        if structured_answer:
+            return structured_answer
         # Free-form questions (GSM8K, DROP, etc.)
         return extract_free_form_answer(response)
 
@@ -647,13 +665,16 @@ def build_extra_body_for_model(
 
     # Qwen3 family (matches reasoning_eval_consolidated.py pattern)
     if "qwen3" in lower:
-        return {"chat_template_kwargs": {"enable_thinking": reasoning}}
+        return {"enable_thinking": reasoning}
 
     # GPT-OSS family (matches reasoning_eval_consolidated.py pattern)
     if "gpt-oss" in lower or "openai/gpt-oss" in lower or "gpt_oss" in lower:
-        effort = "high" if reasoning else "low"
+        # effort = "high" if reasoning else "low"
         # reasoning_effort is a top-level field for GPT-OSS (not nested under chat_template_kwargs)
-        return {"reasoning_effort": effort}
+        if reasoning:
+            return {"reasoning_effort": "high"}
+        else:
+            return None
 
     # OpenAI models with reasoning parameter
     if "gpt" in lower or "o1" in lower:
