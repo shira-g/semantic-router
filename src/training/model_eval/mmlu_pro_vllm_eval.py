@@ -84,6 +84,24 @@ def parse_args():
     parser.add_argument(
         "--seed", type=int, default=42, help="Random seed for reproducibility"
     )
+    parser.add_argument(
+        "--start-idx",
+        type=int,
+        default=0,
+        help="Starting index (0-based) for dataset slicing",
+    )
+    parser.add_argument(
+        "--num-questions",
+        type=int,
+        default=None,
+        help="Number of questions to process from start-idx. If not specified, processes all remaining questions.",
+    )
+    parser.add_argument(
+        "--end-idx",
+        type=int,
+        default=None,
+        help="Ending index (exclusive) for dataset slicing. Alternative to --num-questions.",
+    )
     return parser.parse_args()
 
 
@@ -263,8 +281,6 @@ def evaluate_model(
     with ThreadPoolExecutor(max_workers=concurrent_requests) as executor:
         futures = []
         for i, question_data in enumerate(questions_data):
-            if i < 8 or i >=9:
-                continue  # For quick testing, only process the 5th question. Remove this condition for full evaluation
             future = executor.submit(
                 process_question,
                 client,
@@ -410,6 +426,27 @@ def main():
     print(
         f"Dataset loaded: {len(questions)} questions across {len(dataset_info.categories)} categories"
     )
+
+    # Apply dataset slicing if specified
+    if args.start_idx > 0 or args.num_questions or args.end_idx:
+        start_idx = args.start_idx
+        if args.end_idx is not None:
+            end_idx = args.end_idx
+        elif args.num_questions is not None:
+            end_idx = start_idx + args.num_questions
+        else:
+            end_idx = len(questions)
+        
+        # Validate indices
+        end_idx = min(end_idx, len(questions))
+        start_idx = max(0, start_idx)
+        
+        if start_idx >= end_idx:
+            print(f"Error: start_idx ({start_idx}) must be less than end_idx ({end_idx})")
+            return
+        
+        df = df[start_idx:end_idx]
+        print(f"Dataset sliced: using questions [{start_idx}:{end_idx}] ({len(df)} questions)")
 
     # Evaluate each model
     for model in args.models:
