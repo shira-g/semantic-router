@@ -674,7 +674,7 @@ def build_extra_body_for_model(
         if reasoning:
             return {"reasoning_effort": "high"}
         else:
-            return None
+            return {"reasoning_effort": "low"}
 
     # OpenAI models with reasoning parameter
     if "gpt" in lower or "o1" in lower:
