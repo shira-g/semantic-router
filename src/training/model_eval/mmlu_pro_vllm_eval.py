@@ -277,6 +277,8 @@ def call_model_with_retry(
                         content_parts.append(content_delta)
 
                     reasoning_delta = getattr(delta, "reasoning_content", None)
+                    if not reasoning_delta:
+                        reasoning_delta = getattr(delta, "reasoning", None)
                     if reasoning_delta:
                         if first_token_time is None:
                             first_token_time = time.time()
@@ -309,7 +311,12 @@ def call_model_with_retry(
                 extra_body=extra_body,
             )
             message = response.choices[0].message
-            text = message.content or getattr(message, "reasoning_content", None) or ""
+            text = (
+                message.content
+                or getattr(message, "reasoning_content", None)
+                or getattr(message, "reasoning", None)
+                or ""
+            )
             usage = getattr(response, "usage", None)
             prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
             completion_tokens = (
@@ -388,6 +395,18 @@ def process_question(
     tpot_is_approximate = ttft_seconds is None and tpot_seconds is not None
 
     predicted_answer = extract_answer(response_text, question_data) if success else None
+    if predicted_answer is not None:
+        predicted_answer = str(predicted_answer).strip().upper()
+        valid_letters = {
+            chr(ord("A") + i)
+            for i, option in enumerate(options)
+            if str(option).lower() != "n/a"
+        }
+        if predicted_answer not in valid_letters:
+            print(
+                f"Discarding invalid extracted answer '{predicted_answer}' (valid: {sorted(valid_letters)})"
+            )
+            predicted_answer = None
     is_correct = (predicted_answer == correct_answer) if predicted_answer else False
     print(f"Predicted answer: {predicted_answer}, Correct answer: {correct_answer}")
 
