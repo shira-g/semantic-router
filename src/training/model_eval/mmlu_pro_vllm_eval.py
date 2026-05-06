@@ -64,6 +64,13 @@ def parse_args():
         "--use-cot", action="store_true", help="Use Chain-of-Thought prompting"
     )
     parser.add_argument(
+        "--reasoning-mode",
+        type=str,
+        choices=["on", "off", "none"],
+        default=None,
+        help="Reasoning control mode for model-specific extra_body: on/off/none. If omitted, falls back to --use-cot behavior.",
+    )
+    parser.add_argument(
         "--concurrent-requests",
         type=int,
         default=1,
@@ -212,11 +219,11 @@ def call_model_with_retry(
     prompt: str,
     max_tokens: int,
     temperature: float,
-    use_cot: bool = False,
+    reasoning: Optional[bool] = False,
     measure_ttft_with_streaming: bool = False,
 ) -> Tuple[str, bool, Optional[int], Optional[int], Optional[int], Optional[float]]:
     """Call the model with retry logic for handling timeouts and errors."""
-    extra_body = build_extra_body_for_model(model, reasoning=use_cot) or {}
+    extra_body = build_extra_body_for_model(model, reasoning=reasoning) or {}
     print(f"extra_body for model {model}: {extra_body}")
     # Deterministic decoding controls for reproducible evaluation runs.
     extra_body.update({"top_k": -1})
@@ -334,7 +341,7 @@ def process_question(
     client: OpenAI,
     model: str,
     question_data,
-    use_cot: bool,
+    reasoning: Optional[bool],
     max_tokens: int,
     temperature: float,
     measure_ttft_with_streaming: bool = False,
@@ -345,7 +352,7 @@ def process_question(
     options = question_data.options
     correct_answer = question_data.correct_answer
 
-    # Keep prompt style plain; use_cot toggles reasoning flags in extra_body.
+    # Keep prompt style plain; reasoning toggles reasoning flags in extra_body.
     prompt = dataset.format_prompt(question_data, "plain")
 
     start_time = time.time()
@@ -355,7 +362,7 @@ def process_question(
         prompt,
         max_tokens,
         temperature,
-        use_cot,
+        reasoning,
         measure_ttft_with_streaming,
     )
     end_time = time.time()
@@ -425,7 +432,7 @@ def evaluate_model(
     model: str,
     endpoint: str,
     api_key: str,
-    use_cot: bool,
+    reasoning: Optional[bool],
     concurrent_requests: int,
     max_tokens: int,
     temperature: float,
@@ -447,7 +454,7 @@ def evaluate_model(
                 client,
                 model,
                 question_data,
-                use_cot,
+                reasoning,
                 max_tokens,
                 temperature,
                 measure_ttft_with_streaming,
@@ -532,11 +539,24 @@ def save_results(
     analysis: Dict[str, Any],
     model: str,
     output_dir: str,
-    use_cot: bool,
+    reasoning: Optional[bool],
 ):
     """Save the results and analysis to files."""
     model_name = model.replace("/", "_")
-    cot_suffix = "cot" if use_cot else "direct"
+    reasoning_label = (
+        "Reasoning-On"
+        if reasoning is True
+        else "Reasoning-Off"
+        if reasoning is False
+        else "Reasoning-None"
+    )
+    cot_suffix = (
+        "cot"
+        if reasoning is True
+        else "direct"
+        if reasoning is False
+        else "none"
+    )
 
     # Create output directory if it doesn't exist
     os.makedirs(output_dir, exist_ok=True)
@@ -553,7 +573,7 @@ def save_results(
     # Save summary
     summary = {
         "model": model,
-        "approach": "Chain-of-Thought" if use_cot else "Direct",
+        "approach": reasoning_label,
         "overall_accuracy": analysis["overall_accuracy"],
         "total_questions": analysis["total_questions"],
         "successful_queries": analysis["successful_queries"],
@@ -576,7 +596,7 @@ def save_results(
     # Print summary
     print("\n" + "=" * 50)
     print(f"Model: {model}")
-    print(f"Approach: {'Chain-of-Thought' if use_cot else 'Direct'}")
+    print(f"Approach: {reasoning_label}")
     print(f"Overall Accuracy: {analysis['overall_accuracy']:.4f}")
     print(f"Total Questions: {analysis['total_questions']}")
     print(f"Successful Queries: {analysis['successful_queries']}")
@@ -611,6 +631,14 @@ def save_results(
 
 def main():
     args = parse_args()
+
+    if args.reasoning_mode is not None:
+        reasoning = (
+            True if args.reasoning_mode == "on" else False if args.reasoning_mode == "off" else None
+        )
+    else:
+        # Backward compatible behavior: --use-cot => reasoning on, otherwise off.
+        reasoning = True if args.use_cot else False
 
     # Set random seed for reproducibility
     random.seed(args.seed)
@@ -676,7 +704,7 @@ def main():
             model=model,
             endpoint=args.endpoint,
             api_key=args.api_key,
-            use_cot=args.use_cot,
+            reasoning=reasoning,
             concurrent_requests=args.concurrent_requests,
             max_tokens=args.max_tokens,
             temperature=args.temperature,
@@ -691,7 +719,7 @@ def main():
             analysis=analysis,
             model=model,
             output_dir=args.output_dir,
-            use_cot=args.use_cot,
+            reasoning=reasoning,
         )
 
 
