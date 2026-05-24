@@ -21,6 +21,7 @@ import pandas as pd
 import requests
 from openai import OpenAI
 from tqdm import tqdm
+import tiktoken
 
 sys.path.insert(0, str(Path(__file__).parents[3]))
 from bench.reasoning.router_reason_bench_multi_dataset import extract_answer, build_extra_body_for_model
@@ -216,7 +217,47 @@ def parse_args():
         action="store_true",
         help="Resume from checkpoint if available",
     )
+    parser.add_argument(
+        "--min-prompt-tokens",
+        type=int,
+        default=None,
+        help="Filter to only evaluate questions with prompts containing at least this many tokens (default: no filtering)",
+    )
     return parser.parse_args()
+
+
+def interleave_by_category(questions: list, category_order: Optional[List[str]] = None) -> list:
+    """Reorder questions so consecutive items round-robin through categories.
+
+    Index 0 is the first category, index 1 the second, etc.; after the last
+    category we wrap around. Categories that run out of questions are dropped
+    from the rotation. Original within-category order is preserved.
+    """
+    buckets: Dict[str, list] = {}
+    first_seen: List[str] = []
+    for q in questions:
+        cat = q.category
+        if cat not in buckets:
+            buckets[cat] = []
+            first_seen.append(cat)
+        buckets[cat].append(q)
+
+    if category_order:
+        ordered = [c for c in category_order if c in buckets]
+        # Append any categories present in the data but missing from the requested order.
+        ordered += [c for c in first_seen if c not in ordered]
+    else:
+        ordered = first_seen
+
+    interleaved = []
+    while ordered:
+        next_round = []
+        for cat in ordered:
+            interleaved.append(buckets[cat].pop(0))
+            if buckets[cat]:
+                next_round.append(cat)
+        ordered = next_round
+    return interleaved
 
 
 def get_available_models(endpoint: str, api_key: str = "") -> List[str]:
@@ -455,6 +496,7 @@ def process_question(
     temperature: float,
     measure_ttft_with_streaming: bool = False,
     dataset=None,
+    output_dir: str = ".",
 ) -> Dict[str, Any]:
     """Process a single question and return the results."""
     question = question_data.question
@@ -513,7 +555,9 @@ def process_question(
     print(f"Predicted answer: {predicted_answer}, Correct answer: {correct_answer}")
 
     # Append full per-question details to final log, including token usage.
-    with open("mmlu_pro_vllm_eval.txt", "a") as f:
+    os.makedirs(output_dir, exist_ok=True)
+    log_path = os.path.join(output_dir, "mmlu_pro_vllm_eval.txt")
+    with open(log_path, "a") as f:
         f.write(f"Category: {question_data.category}\n")
         f.write(f"Prompt: {prompt}\n")
         f.write(f"Correct answer: {correct_answer}\n")
@@ -560,6 +604,7 @@ def evaluate_model(
     measure_ttft_with_streaming: bool = False,
     dataset=None,
     checkpoint_mgr: Optional[CheckpointManager] = None,
+    output_dir: str = ".",
 ) -> pd.DataFrame:
     """Evaluate a model on the MMLU-Pro dataset with checkpoint support."""
     client = OpenAI(base_url=endpoint, api_key=api_key if api_key else "dummy")
@@ -588,6 +633,7 @@ def evaluate_model(
             temperature,
             measure_ttft_with_streaming,
             dataset,
+            output_dir,
         )
         results.append(result)
 
@@ -819,10 +865,22 @@ def main():
     )
     df = questions
 
+    print(f"Dataset info: {dataset_info}")
     print(f"Available categories: {', '.join(dataset_info.categories)}")
     print(
         f"Dataset loaded: {len(questions)} questions across {len(dataset_info.categories)} categories"
     )
+
+    # Interleave questions so each consecutive query is from the next category,
+    # cycling back to the first category after the last one.
+    canonical_order = [
+        "math", "physics", "chemistry", "law", "engineering", "other",
+        "economics", "health", "psychology", "business", "biology",
+        "philosophy", "computer science", "history",
+    ]
+    df = interleave_by_category(df, category_order=canonical_order)
+    print(f"Questions interleaved by category (round-robin); first 5 categories: "
+          f"{[q.category for q in df[:5]]}")
 
     # Apply dataset slicing if specified
     if args.start_idx > 0 or args.num_questions or args.end_idx:
@@ -844,6 +902,40 @@ def main():
 
         df = df[start_idx:end_idx]
         print(f"Dataset sliced: using questions [{start_idx}:{end_idx}] ({len(df)} questions)")
+
+    # Apply token-based filtering if specified
+    if args.min_prompt_tokens is not None:
+        print(f"\nFiltering questions with prompt token count >= {args.min_prompt_tokens}...")
+
+        # Use tiktoken to count tokens (using cl100k_base encoding, which is used by GPT-4 and similar models)
+        try:
+            encoding = tiktoken.get_encoding("cl100k_base")
+        except Exception as e:
+            print(f"Warning: Could not load tiktoken encoding, falling back to character-based approximation: {e}")
+            encoding = None
+
+        filtered_questions = []
+        for question_data in df:
+            # Format the prompt the same way it will be sent to the model
+            prompt = dataset.format_prompt(question_data, "plain")
+
+            # Count tokens
+            if encoding:
+                token_count = len(encoding.encode(prompt))
+            else:
+                # Fallback: rough approximation (4 chars per token)
+                token_count = len(prompt) // 4
+
+            if token_count >= args.min_prompt_tokens:
+                filtered_questions.append(question_data)
+
+        original_count = len(df)
+        df = filtered_questions
+        print(f"Filtered: {len(df)}/{original_count} questions have >= {args.min_prompt_tokens} tokens")
+
+        if len(df) == 0:
+            print("Error: No questions match the token filter criteria.")
+            return
 
     # Evaluate each model
     for model in args.models:
@@ -874,6 +966,7 @@ def main():
             measure_ttft_with_streaming=args.measure_ttft_with_streaming,
             dataset=dataset,
             checkpoint_mgr=checkpoint_mgr if args.resume or args.checkpoint_interval > 0 else None,
+            output_dir=args.output_dir,
         )
 
         # Analyze and save results
