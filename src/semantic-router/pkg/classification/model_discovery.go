@@ -29,7 +29,6 @@ func (mp *ModelPaths) IsComplete() bool {
 
 // HasLoRAModels checks if LoRA models are available
 func (mp *ModelPaths) HasLoRAModels() bool {
-	fmt.Println("debug: checking LoRA models, mp =", mp)
 	return mp.LoRAIntentClassifier != "" &&
 		mp.LoRAPIIClassifier != "" &&
 		mp.LoRASecurityClassifier != "" &&
@@ -122,20 +121,24 @@ func AutoDiscoverModelsWithRegistry(modelsDir string, modelRegistry map[string]s
 
 		// Collect LoRA models by architecture
 		// Use mom_registry to determine if it's a LoRA model, fallback to directory name
+		// Also recognize the "mom-*" model layout used by this project's models/ tree.
 		switch {
-		case isLoRAIntent || strings.HasPrefix(dirName, "lora_intent_classifier"):
+		case isLoRAIntent || strings.HasPrefix(dirName, "lora_intent_classifier") ||
+			dirName == "mom-domain-classifier":
 			arch := detectArchitectureFromPath(dirName)
 			if architectureModels[arch].Intent == "" {
 				architectureModels[arch].Intent = path
 			}
 
-		case isLORAPII || strings.HasPrefix(dirName, "lora_pii_detector"):
+		case isLORAPII || strings.HasPrefix(dirName, "lora_pii_detector") ||
+			dirName == "mom-pii-classifier":
 			arch := detectArchitectureFromPath(dirName)
 			if architectureModels[arch].PII == "" {
 				architectureModels[arch].PII = path
 			}
 
-		case isLORASecurity || strings.HasPrefix(dirName, "lora_jailbreak_classifier"):
+		case isLORASecurity || strings.HasPrefix(dirName, "lora_jailbreak_classifier") ||
+			dirName == "mom-jailbreak-classifier":
 			arch := detectArchitectureFromPath(dirName)
 			if architectureModels[arch].Security == "" {
 				architectureModels[arch].Security = path
@@ -224,10 +227,8 @@ func ValidateModelPaths(paths *ModelPaths) error {
 	if paths == nil {
 		return fmt.Errorf("model paths is nil")
 	}
-	fmt.Println("debug: ValidateModelPaths called with paths:", paths)
 	// If LoRA models are available, validate them
 	if paths.HasLoRAModels() {
-		fmt.Println("debug: HasLoRAModels is true, validating LoRA models")
 		loraChecks := map[string]string{
 			"LoRA Intent classifier":   paths.LoRAIntentClassifier,
 			"LoRA PII classifier":      paths.LoRAPIIClassifier,
@@ -246,10 +247,8 @@ func ValidateModelPaths(paths *ModelPaths) error {
 		}
 		return nil
 	}
-	fmt.Println("debug: HasLoRAModels is false, validating legacy models")
 	// If no LoRA models, validate legacy models
 	if paths.HasLegacyModels() {
-		fmt.Println("debug: HasLegacyModels is true, validating legacy models")
 		legacyChecks := map[string]string{
 			"ModernBERT base":     paths.ModernBertBase,
 			"Intent classifier":   paths.IntentClassifier,
@@ -269,7 +268,6 @@ func ValidateModelPaths(paths *ModelPaths) error {
 		}
 		return nil
 	}
-	fmt.Println("debug: HasLegacyModels is false, no valid models found")
 	return fmt.Errorf("no valid models found (neither LoRA nor legacy)")
 }
 
@@ -369,24 +367,19 @@ func AutoInitializeUnifiedClassifier(modelsDir string) (*UnifiedClassifier, erro
 // AutoInitializeUnifiedClassifierWithRegistry auto-discovers and initializes with mom_registry
 func AutoInitializeUnifiedClassifierWithRegistry(modelsDir string, modelRegistry map[string]string) (*UnifiedClassifier, error) {
 	// Discover models using mom_registry for LoRA detection
-	fmt.Println("debug: entering AutoInitializeUnifiedClassifierWithRegistry with modelsDir =", modelsDir)
 	paths, err := AutoDiscoverModelsWithRegistry(modelsDir, modelRegistry)
 	if err != nil {
 		return nil, fmt.Errorf("model discovery failed: %w", err)
 	}
-	fmt.Println("debug: here1")
 	// Validate paths
 	if err := ValidateModelPaths(paths); err != nil {
 		return nil, fmt.Errorf("model validation failed: %w", err)
 	}
-	fmt.Println("debug: here2")
 
 	// Check if we should use LoRA models
 	if paths.PreferLoRA() {
-		fmt.Println("debug: LoRA models preferred, initializing with LoRA models")
 		return initializeLoRAUnifiedClassifier(paths)
 	}
-	fmt.Println("debug: here3")
 	// Fallback to legacy ModernBERT initialization
 	return initializeLegacyUnifiedClassifier(paths)
 }
