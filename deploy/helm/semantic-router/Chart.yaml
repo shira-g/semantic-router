@@ -28,28 +28,28 @@ icon: https://raw.githubusercontent.com/vllm-project/semantic-router/main/websit
 dependencies:
   - name: redis
     alias: semantic-cache-redis
-    version: ">=0.0.0"
+    version: "27.0.4"
     repository: "https://charts.bitnami.com/bitnami"
     condition: dependencies.semanticCache.redis.enabled
   - name: milvus
     alias: semantic-cache-milvus
-    version: ">=0.0.0"
+    version: "4.0.31"
     repository: "https://milvus-io.github.io/milvus-helm/"
     condition: dependencies.semanticCache.milvus.enabled
   - name: redis
     alias: response-api-redis
-    version: ">=0.0.0"
+    version: "27.0.4"
     repository: "https://charts.bitnami.com/bitnami"
     condition: dependencies.responseApi.redis.enabled
   - name: jaeger
-    version: ">=0.0.0"
+    version: "4.6.0"
     repository: "https://jaegertracing.github.io/helm-charts"
     condition: dependencies.observability.jaeger.enabled
   - name: prometheus
-    version: ">=0.0.0"
+    version: "28.13.0"
     repository: "https://prometheus-community.github.io/helm-charts"
     condition: dependencies.observability.prometheus.enabled
   - name: grafana
-    version: ">=0.0.0"
+    version: "10.5.15"
     repository: "https://grafana.github.io/helm-charts"
     condition: dependencies.observability.grafana.enabled
