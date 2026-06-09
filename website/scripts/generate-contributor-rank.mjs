@@ -199,6 +199,7 @@ const identityOverrides = [
   {
     key: 'liuqihao',
     name: '刘启灏',
+    login: 'BruceLoveDecimal',
     emails: ['liuqihao@liuqihaodemacbook-pro.local'],
   },
   {
@@ -222,6 +223,8 @@ const identityOverrides = [
 const overrideByEmail = new Map()
 const overrideByName = new Map()
 const overrideByLogin = new Map()
+const githubProfileByLogin = new Map()
+const pullAuthorBySha = new Map()
 
 for (const identity of identityOverrides) {
   if (identity.login) {
@@ -267,8 +270,8 @@ const rangeDefinitions = [
 try {
   const generatedAt = formatLocalDate(new Date())
   const allRows = readContributorRows(null)
-  const release = readLatestRelease()
-  const newContributorsSinceRelease = buildNewContributorsSinceRelease(release, allRows)
+  const releaseWindow = readReleaseWindow()
+  const newContributorsSinceRelease = buildNewContributorsSinceRelease(releaseWindow, allRows)
   const newContributorKeys = new Set(newContributorsSinceRelease.entries.map(entry => entry.key))
   const snapshots = Object.fromEntries(
     rangeDefinitions.map(range => [range.id, buildSnapshot(range, generatedAt, allRows, newContributorKeys)]),
@@ -291,6 +294,7 @@ function buildSnapshot(range, generatedAt, allRows, newContributorKeys) {
   const byContributor = collectContributorStats(rows)
   const totalCommits = [...byContributor.values()].reduce((sum, entry) => sum + entry.commits, 0)
   const entries = rankContributorEntries(byContributor, totalCommits, newContributorKeys)
+  const newContributors = entries.filter(entry => entry.isNewContributorSinceRelease).length
 
   return {
     id: range.id,
@@ -301,16 +305,20 @@ function buildSnapshot(range, generatedAt, allRows, newContributorKeys) {
     description: range.description,
     totalCommits,
     totalContributors: entries.length,
+    newContributors,
     entries,
   }
 }
 
-function buildNewContributorsSinceRelease(release, allRows) {
-  if (!release) {
+function buildNewContributorsSinceRelease(releaseWindow, allRows) {
+  if (!releaseWindow) {
     return {
       tagName: null,
       releaseName: null,
       releaseDate: null,
+      targetTagName: null,
+      targetReleaseName: null,
+      targetReleaseDate: null,
       comparisonMode: 'none',
       totalCommits: 0,
       totalContributors: 0,
@@ -318,15 +326,14 @@ function buildNewContributorsSinceRelease(release, allRows) {
     }
   }
 
-  const commitShasSinceTag = readCommitShasSinceTag(release.tagName)
-  const rowsSinceRelease = commitShasSinceTag
-    ? allRows.filter(row => row.sha && commitShasSinceTag.has(row.sha))
-    : allRows.filter(row => row.date >= release.publishedAt)
-  const rowsBeforeRelease = commitShasSinceTag
-    ? allRows.filter(row => !row.sha || !commitShasSinceTag.has(row.sha))
-    : allRows.filter(row => row.date < release.publishedAt)
-  const historicalContributorKeys = new Set(collectContributorStats(rowsBeforeRelease).keys())
-  const byContributor = collectContributorStats(rowsSinceRelease)
+  const { baseRelease, targetRelease } = releaseWindow
+  const commitShasInWindow = readCommitShasBetweenTags(baseRelease.tagName, targetRelease.tagName)
+  const rowsInWindow = commitShasInWindow
+    ? allRows.filter(row => row.sha && commitShasInWindow.has(row.sha))
+    : allRows.filter(row => row.date >= baseRelease.publishedAt && row.date <= targetRelease.publishedAt)
+  const rowsBeforeBaseRelease = allRows.filter(row => row.date < baseRelease.publishedAt)
+  const historicalContributorKeys = new Set(collectContributorStats(rowsBeforeBaseRelease).keys())
+  const byContributor = collectContributorStats(rowsInWindow)
 
   for (const key of historicalContributorKeys) {
     byContributor.delete(key)
@@ -336,10 +343,13 @@ function buildNewContributorsSinceRelease(release, allRows) {
   const entries = rankContributorEntries(byContributor, totalCommits, new Set(byContributor.keys()))
 
   return {
-    tagName: release.tagName,
-    releaseName: release.name,
-    releaseDate: release.publishedAt.slice(0, 10),
-    comparisonMode: commitShasSinceTag ? 'tag' : 'date',
+    tagName: baseRelease.tagName,
+    releaseName: baseRelease.name,
+    releaseDate: baseRelease.publishedAt.slice(0, 10),
+    targetTagName: targetRelease.tagName,
+    targetReleaseName: targetRelease.name,
+    targetReleaseDate: targetRelease.publishedAt.slice(0, 10),
+    comparisonMode: commitShasInWindow ? 'tag' : 'date',
     totalCommits,
     totalContributors: entries.length,
     entries,
@@ -413,7 +423,7 @@ function readContributorRows(startDate) {
   }
 }
 
-function readLatestRelease() {
+function readReleaseWindow() {
   try {
     const output = execFileSync('gh', ['api', `repos/${githubRepo}/releases`], {
       cwd: repoRoot,
@@ -422,15 +432,23 @@ function readLatestRelease() {
       stdio: ['ignore', 'pipe', 'pipe'],
     }).trim()
 
-    const release = JSON.parse(output)
+    const releases = uniqueReleasesByTag(JSON.parse(output)
       .filter(candidate => !candidate.draft)
-      .sort((left, right) => String(right.published_at).localeCompare(String(left.published_at)))[0]
+      .sort((left, right) => String(right.published_at).localeCompare(String(left.published_at))))
 
-    if (release?.tag_name && release?.published_at) {
+    const [targetRelease, baseRelease] = releases
+    if (baseRelease?.tag_name && baseRelease?.published_at && targetRelease?.tag_name && targetRelease?.published_at) {
       return {
-        tagName: release.tag_name,
-        name: release.name ?? release.tag_name,
-        publishedAt: release.published_at,
+        baseRelease: {
+          tagName: baseRelease.tag_name,
+          name: baseRelease.name ?? baseRelease.tag_name,
+          publishedAt: baseRelease.published_at,
+        },
+        targetRelease: {
+          tagName: targetRelease.tag_name,
+          name: targetRelease.name ?? targetRelease.tag_name,
+          publishedAt: targetRelease.published_at,
+        },
       }
     }
   }
@@ -438,31 +456,42 @@ function readLatestRelease() {
     console.warn(`Falling back to local git release tag data: ${error.message}`)
   }
 
-  return readLatestLocalTag()
+  return readLocalReleaseWindow()
 }
 
-function readLatestLocalTag() {
+function uniqueReleasesByTag(releases) {
+  const seen = new Set()
+  const unique = []
+
+  for (const release of releases) {
+    const tagName = release?.tag_name
+    if (!tagName || seen.has(tagName)) {
+      continue
+    }
+
+    seen.add(tagName)
+    unique.push(release)
+  }
+
+  return unique
+}
+
+function readLocalReleaseWindow() {
   try {
-    const tagName = execFileSync('git', ['tag', '--sort=-creatordate'], {
+    const tagNames = execFileSync('git', ['tag', '--sort=-creatordate'], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim().split('\n').find(Boolean)
+    }).trim().split('\n').filter(Boolean)
 
-    if (!tagName) {
+    const [targetTagName, baseTagName] = tagNames
+    if (!targetTagName || !baseTagName) {
       return null
     }
 
-    const publishedAt = execFileSync('git', ['log', '-1', '--format=%aI', tagName], {
-      cwd: repoRoot,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim()
-
     return {
-      tagName,
-      name: tagName,
-      publishedAt,
+      baseRelease: readLocalReleaseTag(baseTagName),
+      targetRelease: readLocalReleaseTag(targetTagName),
     }
   }
   catch (error) {
@@ -472,8 +501,22 @@ function readLatestLocalTag() {
   }
 }
 
-function readCommitShasSinceTag(tagName) {
-  if (!tagName) {
+function readLocalReleaseTag(tagName) {
+  const publishedAt = execFileSync('git', ['log', '-1', '--format=%aI', tagName], {
+    cwd: repoRoot,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  }).trim()
+
+  return {
+    tagName,
+    name: tagName,
+    publishedAt,
+  }
+}
+
+function readCommitShasBetweenTags(baseTagName, targetTagName) {
+  if (!baseTagName || !targetTagName) {
     return null
   }
 
@@ -482,7 +525,7 @@ function readCommitShasSinceTag(tagName) {
       'api',
       '--paginate',
       '--slurp',
-      `repos/${githubRepo}/compare/${tagName}...main?per_page=100`,
+      `repos/${githubRepo}/compare/${baseTagName}...${targetTagName}?per_page=100`,
     ], {
       cwd: repoRoot,
       encoding: 'utf8',
@@ -501,13 +544,18 @@ function readCommitShasSinceTag(tagName) {
   }
 
   try {
-    execFileSync('git', ['rev-parse', '--verify', `${tagName}^{commit}`], {
+    execFileSync('git', ['rev-parse', '--verify', `${baseTagName}^{commit}`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    execFileSync('git', ['rev-parse', '--verify', `${targetTagName}^{commit}`], {
       cwd: repoRoot,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'pipe'],
     })
 
-    const output = execFileSync('git', ['log', '--no-merges', '--format=%H', `${tagName}..HEAD`], {
+    const output = execFileSync('git', ['log', '--no-merges', '--format=%H', `${baseTagName}..${targetTagName}`], {
       cwd: repoRoot,
       encoding: 'utf8',
       maxBuffer: 1024 * 1024 * 8,
@@ -542,14 +590,22 @@ function readGitHubCommitRows(startDate) {
   return pages
     .flat()
     .filter(commit => (commit.parents ?? []).length <= 1)
-    .map(commit => ({
-      sha: commit.sha,
-      name: commit.commit?.author?.name ?? '',
-      email: commit.commit?.author?.email ?? '',
-      date: commit.commit?.author?.date ?? commit.commit?.committer?.date ?? '',
-      githubLogin: commit.author?.login,
-      avatarUrl: commit.author?.avatar_url,
-    }))
+    .map((commit) => {
+      const name = commit.commit?.author?.name ?? ''
+      const email = commit.commit?.author?.email ?? ''
+      const githubLogin = commit.author?.login
+      const pullAuthor = githubLogin ? null : readAssociatedPullAuthorIfNeeded(commit.sha, name, email)
+
+      return {
+        sha: commit.sha,
+        name,
+        email,
+        date: commit.commit?.author?.date ?? commit.commit?.committer?.date ?? '',
+        githubLogin: githubLogin ?? pullAuthor?.login,
+        githubLoginSource: githubLogin ? 'commit' : pullAuthor ? 'pull' : undefined,
+        avatarUrl: commit.author?.avatar_url ?? pullAuthor?.avatarUrl,
+      }
+    })
     .filter(row => row.date)
 }
 
@@ -595,52 +651,150 @@ function resolveIdentity(name, email, source = {}) {
   const normalizedName = normalizeName(name)
   const githubLogin = source.githubLogin
   const avatarUrl = source.avatarUrl
+  const isPullLogin = source.githubLoginSource === 'pull'
   const normalizedGithubLogin = normalizeLogin(githubLogin)
+  const override = overrideByEmail.get(normalizedEmail) ?? overrideByName.get(normalizedName)
 
   if (isBotAuthor(normalizedName, normalizedEmail, normalizedGithubLogin)) {
     return { key: normalizedEmail || normalizedName || normalizedGithubLogin, name, isBot: true }
   }
 
-  if (githubLogin) {
+  if (githubLogin && !isPullLogin) {
     const login = String(githubLogin)
     const override = overrideByLogin.get(normalizedGithubLogin)
+    const profile = avatarUrl ? null : readGitHubUserProfile(login)
 
     return {
-      key: `github:${normalizedGithubLogin}`,
+      key: `github:${normalizeLogin(profile?.login ?? login)}`,
       name: override?.name ?? name ?? login,
-      login,
-      avatarLogin: login,
-      avatarUrl,
-      avatarSeed: normalizeLogin(login),
+      login: profile?.login ?? login,
+      avatarLogin: profile?.login ?? login,
+      avatarUrl: avatarUrl ?? profile?.avatarUrl,
+      avatarSeed: normalizeLogin(profile?.login ?? login),
       isBot: false,
     }
   }
 
-  const override = overrideByEmail.get(normalizedEmail) ?? overrideByName.get(normalizedName)
-
   if (override) {
+    const login = override.login ?? githubLogin
+    const profile = login ? readGitHubUserProfile(login) : null
+
     return {
-      key: override.login ? `github:${normalizeLogin(override.login)}` : override.key,
+      key: login ? `github:${normalizeLogin(profile?.login ?? login)}` : override.key,
       name: override.name,
-      login: override.login,
-      avatarLogin: override.avatarLogin ?? override.login,
-      avatarUrl: undefined,
+      login: profile?.login ?? login,
+      avatarLogin: override.avatarLogin ?? profile?.login ?? login,
+      avatarUrl: avatarUrl ?? profile?.avatarUrl,
       avatarSeed: override.key,
       isBot: false,
     }
   }
 
   const localGithubLogin = extractGithubLogin(normalizedEmail)
-  const key = localGithubLogin ? `github:${localGithubLogin.toLowerCase()}` : `email:${normalizedEmail || normalizedName}`
+  const resolvedGithubLogin = localGithubLogin ?? githubLogin
+  const profile = resolvedGithubLogin ? readGitHubUserProfile(resolvedGithubLogin) : null
+  const login = profile?.login ?? resolvedGithubLogin
+  const key = login ? `github:${normalizeLogin(login)}` : `email:${normalizedEmail || normalizedName}`
 
   return {
     key,
-    name: name || localGithubLogin || 'Unknown contributor',
-    login: localGithubLogin,
-    avatarLogin: localGithubLogin,
-    avatarUrl: undefined,
+    name: name || profile?.name || login || 'Unknown contributor',
+    login,
+    avatarLogin: login,
+    avatarUrl: avatarUrl ?? profile?.avatarUrl,
     avatarSeed: normalizedEmail || normalizedName || key,
     isBot: false,
+  }
+}
+
+function readAssociatedPullAuthorIfNeeded(sha, name, email) {
+  const normalizedEmail = normalizeEmail(email)
+  const override = overrideByEmail.get(normalizedEmail) ?? overrideByName.get(normalizeName(name))
+
+  if (override?.login || extractGithubLogin(normalizedEmail)) {
+    return null
+  }
+
+  return readAssociatedPullAuthor(sha)
+}
+
+function readAssociatedPullAuthor(sha) {
+  if (!sha) {
+    return null
+  }
+
+  if (pullAuthorBySha.has(sha)) {
+    return pullAuthorBySha.get(sha)
+  }
+
+  try {
+    const output = execFileSync('gh', [
+      'api',
+      '-H',
+      'Accept: application/vnd.github+json',
+      `repos/${githubRepo}/commits/${sha}/pulls`,
+    ], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024 * 2,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const pull = JSON.parse(output).find((candidate) => {
+      const login = normalizeLogin(candidate?.user?.login)
+
+      return login && login !== 'ghost'
+    })
+    const author = pull
+      ? {
+          login: pull.user.login,
+          avatarUrl: pull.user.avatar_url,
+        }
+      : null
+
+    pullAuthorBySha.set(sha, author)
+
+    return author
+  }
+  catch {
+    pullAuthorBySha.set(sha, null)
+
+    return null
+  }
+}
+
+function readGitHubUserProfile(login) {
+  const normalizedLogin = normalizeLogin(login)
+
+  if (!normalizedLogin) {
+    return null
+  }
+
+  if (githubProfileByLogin.has(normalizedLogin)) {
+    return githubProfileByLogin.get(normalizedLogin)
+  }
+
+  try {
+    const output = execFileSync('gh', ['api', `users/${encodeURIComponent(String(login))}`], {
+      cwd: repoRoot,
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    const user = JSON.parse(output)
+    const profile = {
+      login: user.login ?? login,
+      name: user.name,
+      avatarUrl: user.avatar_url,
+    }
+
+    githubProfileByLogin.set(normalizedLogin, profile)
+
+    return profile
+  }
+  catch {
+    githubProfileByLogin.set(normalizedLogin, null)
+
+    return null
   }
 }
 
@@ -734,6 +888,7 @@ export interface ContributorRankSnapshot {
   description: string
   totalCommits: number
   totalContributors: number
+  newContributors: number
   entries: ContributorRankEntry[]
 }
 
@@ -741,6 +896,9 @@ export interface NewContributorsSinceReleaseSnapshot {
   tagName: string | null
   releaseName: string | null
   releaseDate: string | null
+  targetTagName: string | null
+  targetReleaseName: string | null
+  targetReleaseDate: string | null
   comparisonMode: 'tag' | 'date' | 'none'
   totalCommits: number
   totalContributors: number

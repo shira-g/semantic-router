@@ -26,6 +26,8 @@ var BaselineRouterContract = []string{
 	"plugin-config-variations",
 	"chat-completions-progressive-stress",
 	"anthropic-passthrough-openai-regression",
+	// Retention directive response-header contract (issue #2009)
+	"retention-directive",
 	// Session observability
 	"session-telemetry-metrics",
 	"session-pricing-chat-completions",
@@ -44,6 +46,8 @@ var DashboardContract = []string{
 	"dashboard-deploy-invalid-yaml",
 	// Evaluation endpoints (tasks/CRUD require CGO — only datasets works without it)
 	"dashboard-eval-datasets",
+	// Workflow persistence survives dashboard pod restart (requires dashboard PVC)
+	"dashboard-restart-recovery",
 	// Security Policy RBAC + ratelimit apply
 	"security-policy-apply",
 }

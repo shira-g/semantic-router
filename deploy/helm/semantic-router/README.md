@@ -125,10 +125,14 @@ the locked chart dependencies.
 | config.global.stores.semantic_cache.max_entries | int | `1000` |  |
 | config.global.stores.semantic_cache.similarity_threshold | float | `0.8` |  |
 | config.global.stores.semantic_cache.ttl_seconds | int | `3600` |  |
+| dashboard.allowOpenBootstrap | bool | `false` | Allow first-admin creation via the public, unauthenticated web-form bootstrap endpoint. Off by default: a fresh, internet-reachable deployment should not be claimable by the first stranger who finds it. Production provisions the admin via the DASHBOARD_ADMIN_* env vars (which create it at startup and close the bootstrap path automatically). Set this to true only for demos where signing up the first admin through the UI is acceptable. |
 | dashboard.enabled | bool | `false` | Enable the vLLM-SR dashboard |
 | dashboard.image.pullPolicy | string | `"IfNotPresent"` | Dashboard image pull policy |
 | dashboard.image.repository | string | `"ghcr.io/vllm-project/semantic-router/dashboard"` | Dashboard image repository |
 | dashboard.image.tag | string | `"latest"` | Dashboard image tag |
+| dashboard.jwtSecret | object | `{"existingSecret":"","existingSecretKey":"jwt-secret"}` | JWT signing secret for dashboard auth sessions. Point this at a Secret you manage (ideally an ExternalSecret) so the signing key is stable. If you leave it unset, the dashboard binary falls back to generating a random secret on every pod start, which invalidates all login sessions on each restart (rolling update, chart bump, or node move forces a re-login). A zero-config install still works (the random fallback is a valid signing key, you can log in and use the dashboard); you just lose existing sessions whenever the pod restarts, so leaving it unset is fine for demos but set this for any deployment where sessions need to survive restarts. |
+| dashboard.jwtSecret.existingSecret | string | `""` | Name of an existing Secret holding the JWT signing key. When set, the dashboard reads DASHBOARD_JWT_SECRET from it via secretKeyRef. When empty, no env is injected and the binary uses its per-start random fallback. |
+| dashboard.jwtSecret.existingSecretKey | string | `"jwt-secret"` | Key within existingSecret holding the JWT signing secret. |
 | dashboard.persistence.accessMode | string | `"ReadWriteOnce"` | Access mode for the dashboard-local state PVC |
 | dashboard.persistence.annotations | object | `{}` | Annotations for the dashboard-local state PVC |
 | dashboard.persistence.enabled | bool | `false` | Persist dashboard-local SQLite state for auth/session/workflow data. This is restart-safe for one dashboard replica, not a shared HA session store. |
@@ -136,6 +140,7 @@ the locked chart dependencies.
 | dashboard.persistence.mountPath | string | `"/app/data"` | Container mount path for dashboard-local state |
 | dashboard.persistence.size | string | `"1Gi"` | Requested dashboard-local state size |
 | dashboard.persistence.storageClassName | string | `""` | Storage class name. Leave empty for the cluster default; use "-" to render storageClassName: "". |
+| dashboard.podSecurityContext | object | `{"fsGroup":65532}` | Pod-level security context. The default fsGroup matches the non-root user (UID/GID 65532) baked into the upstream dashboard image, ensuring the persistence PVC mount at /app/data is writable by the binary. Without this, the dashboard crashloops with "unable to open database file" when persistence is enabled on storage classes that mount as root:root 0755 (which is the default behavior for most cloud-provider CSI drivers). Override if you build a custom dashboard image with a different non-root UID. |
 | dashboard.readonly | bool | `false` | Run dashboard in read-only mode |
 | dashboard.replicaCount | int | `1` | Dashboard replica count. Must stay 1 until the dashboard auth/session store supports a shared multi-replica backend. |
 | dashboard.resources.limits | object | `{"cpu":"500m","memory":"512Mi"}` |  |
