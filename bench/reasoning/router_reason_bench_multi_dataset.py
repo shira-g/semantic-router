@@ -665,7 +665,7 @@ def build_extra_body_for_model(
 
     # Qwen3 family (matches reasoning_eval_consolidated.py pattern)
     if "qwen3" in lower:
-        return {"enable_thinking": reasoning}
+        return {"chat_template_kwargs": {"enable_thinking": reasoning}}
 
     # GPT-OSS family (matches reasoning_eval_consolidated.py pattern)
     if "gpt-oss" in lower or "openai/gpt-oss" in lower or "gpt_oss" in lower:
