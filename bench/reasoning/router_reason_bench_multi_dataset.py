@@ -333,6 +333,20 @@ def extract_answer(response: Any, question: Optional[Question] = None) -> Option
     # so that answer patterns inside the trace don't shadow the final answer.
     response = re.sub(r"<think>.*?</think>", "", response, flags=re.DOTALL).strip()
 
+    # Handle a malformed/unmatched </think>: some servers emit the reasoning as
+    # plain text (no opening <think>) followed by a stray </think> and then the real
+    # answer. The closed-pair regex above leaves that untouched, so the extractor
+    # would scan the whole reasoning trace and grab a stray letter instead of the
+    # committed answer. When a </think> survives with no opening <think>, keep only
+    # the content after the final </think> (the actual answer).
+    if "</think>" in response and "<think>" not in response:
+        response = response.rsplit("</think>", 1)[-1].strip()
+    # Conversely, a truncated trace (opening <think>, never closed because the token
+    # cap was hit) has no committed answer at all; drop it so extraction returns None
+    # ("no answer emitted") rather than a spurious guess from the unfinished trace.
+    elif "<think>" in response and "</think>" not in response:
+        response = response.split("<think>", 1)[0].strip()
+
     # Determine answer format based on question type
     structured_answer = extract_structured_answer(response)
     if question and hasattr(question, "options") and question.options:

@@ -364,8 +364,16 @@ def call_model_with_retry(
     temperature: float,
     reasoning: Optional[bool] = False,
     measure_ttft_with_streaming: bool = False,
-) -> Tuple[str, bool, Optional[int], Optional[int], Optional[int], Optional[float]]:
-    """Call the model with retry logic for handling timeouts and errors."""
+) -> Tuple[
+    str, bool, Optional[int], Optional[int], Optional[int], Optional[float], str, str
+]:
+    """Call the model with retry logic for handling timeouts and errors.
+
+    Returns (text, success, prompt_tokens, completion_tokens, total_tokens,
+    ttft_seconds, reasoning_text, content_text). `text` is the combined view used
+    for answer extraction (content if present, else reasoning); `reasoning_text`
+    and `content_text` are the separated fields for logging/inspection.
+    """
     extra_body = build_extra_body_for_model(model, reasoning=reasoning) or {}
     print(f"extra_body for model {model}: {extra_body}")
     # Deterministic decoding controls for reproducible evaluation runs.
@@ -427,7 +435,9 @@ def call_model_with_retry(
                             first_token_time = time.time()
                         reasoning_parts.append(reasoning_delta)
 
-                text = "".join(content_parts) or "".join(reasoning_parts)
+                content_text = "".join(content_parts)
+                reasoning_text = "".join(reasoning_parts)
+                text = content_text or reasoning_text
                 ttft_seconds = (
                     first_token_time - request_start_time
                     if first_token_time is not None
@@ -440,6 +450,8 @@ def call_model_with_retry(
                     completion_tokens,
                     total_tokens,
                     ttft_seconds,
+                    reasoning_text,
+                    content_text,
                 )
 
             response = client.chat.completions.create(
@@ -454,12 +466,13 @@ def call_model_with_retry(
                 extra_body=extra_body,
             )
             message = response.choices[0].message
-            text = (
-                message.content
-                or getattr(message, "reasoning_content", None)
+            content_text = message.content or ""
+            reasoning_text = (
+                getattr(message, "reasoning_content", None)
                 or getattr(message, "reasoning", None)
                 or ""
             )
+            text = content_text or reasoning_text
             usage = getattr(response, "usage", None)
             prompt_tokens = getattr(usage, "prompt_tokens", None) if usage else None
             completion_tokens = (
@@ -474,6 +487,8 @@ def call_model_with_retry(
                 completion_tokens,
                 total_tokens,
                 ttft_seconds,
+                reasoning_text,
+                content_text,
             )
         except Exception as e:
             if attempt < MAX_RETRIES - 1:
@@ -484,7 +499,7 @@ def call_model_with_retry(
                 time.sleep(delay)
             else:
                 print(f"Failed to call model after {MAX_RETRIES} attempts: {e}")
-                return "ERROR", False, None, None, None, None
+                return "ERROR", False, None, None, None, None, "", "ERROR"
 
 
 def process_question(
@@ -507,7 +522,16 @@ def process_question(
     prompt = dataset.format_prompt(question_data, "plain")
 
     start_time = time.time()
-    response_text, success, prompt_tokens, completion_tokens, total_tokens, ttft_seconds = call_model_with_retry(
+    (
+        response_text,
+        success,
+        prompt_tokens,
+        completion_tokens,
+        total_tokens,
+        ttft_seconds,
+        reasoning_text,
+        content_text,
+    ) = call_model_with_retry(
         client,
         model,
         prompt,
@@ -561,6 +585,8 @@ def process_question(
         f.write(f"Category: {question_data.category}\n")
         f.write(f"Prompt: {prompt}\n")
         f.write(f"Correct answer: {correct_answer}\n")
+        f.write(f"Reasoning: {reasoning_text}\n")
+        f.write(f"Content: {content_text}\n")
         f.write(f"Model response: {response_text}\n")
         f.write(f"Predicted answer: {predicted_answer}\n")
         f.write(f"Prompt tokens: {prompt_tokens}\n")
@@ -577,6 +603,8 @@ def process_question(
         "options": options,
         "correct_answer": correct_answer,
         "model_response": response_text,
+        "reasoning": reasoning_text,
+        "content": content_text,
         "predicted_answer": predicted_answer,
         "is_correct": is_correct,
         "category": question_data.category,
